@@ -35,7 +35,6 @@ local CONFIG = {
         Bostan = "rbxassetid://YOUR_IMAGE_ID",
         Fistic = "rbxassetid://YOUR_IMAGE_ID",
         Cojuhari = "rbxassetid://YOUR_IMAGE_ID",
-        Grosu = "rbxassetid://YOUR_IMAGE_ID",
         Braga = "rbxassetid://YOUR_IMAGE_ID",
         Tronciu = "rbxassetid://YOUR_IMAGE_ID",
     },
@@ -46,25 +45,25 @@ local levels = {
     {
         name = "Year 1",
         checkpointDistance = 0,
-        obstacleInterval = 2.5,  -- Slower start
+        obstacleInterval = 3.0,  -- Calmer start (fewer obstacles)
         pistachioInterval = 1.1,
     },
     {
         name = "Year 2", 
         checkpointDistance = 300,
-        obstacleInterval = 2.0,  -- Moderate
+        obstacleInterval = 2.4,  -- Moderate
         pistachioInterval = 1.0,
     },
     {
         name = "Year 3",
         checkpointDistance = 650,
-        obstacleInterval = 1.5,  -- Getting harder
+        obstacleInterval = 1.8,  -- Getting harder
         pistachioInterval = 0.95,
     },
     {
         name = "Year 4",
         checkpointDistance = 1000,
-        obstacleInterval = 1.2,  -- Challenging but fair
+        obstacleInterval = 1.4,  -- Challenging but fair
         pistachioInterval = 0.87,
     },
 }
@@ -112,6 +111,10 @@ local pistachiosFolder = runnerWorld:FindFirstChild("Pistachios") or Instance.ne
 pistachiosFolder.Name = "Pistachios"
 pistachiosFolder.Parent = runnerWorld
 
+local platformsFolder = runnerWorld:FindFirstChild("Platforms") or Instance.new("Folder")
+platformsFolder.Name = "Platforms"
+platformsFolder.Parent = runnerWorld
+
 local distanceTraveled = 0
 local currentLevelIndex = 1
 local pistachioCount = 0
@@ -136,6 +139,10 @@ local yearProgress = 0
 local yearMeter = 0
 local maxYearMeter = 1000
 
+-- Checkpoint system variables
+local lastCheckpointReached = 0
+local savedCheckpointPosition = Vector3.new(0, 55, 0)  -- Start position (GROUND_Y + 5)
+
 local hudGui
 local pistachioLabel
 local scoreLabel
@@ -143,10 +150,201 @@ local levelLabel
 local healthLabel
 local streakLabel
 local yearLabel
+local checkpointLabel  -- New label for checkpoints
 
 local function getCharacterRoot()
     local character = player.Character or player.CharacterAdded:Wait()
     return character:WaitForChild("HumanoidRootPart")
+end
+
+local platformWidth = 18  -- Width across all lanes
+local platformHeight = 1  -- Thickness
+local gapMinLength = 5    -- Minimum gap size (smaller for easier early jumps)
+local gapMaxLength = 9    -- Maximum gap size (tighter gaps overall)
+local platformColor = Color3.fromRGB(255, 105, 180)  -- Hot pink!
+local lastPlatformZ = 0   -- Track where we last spawned a platform
+local GROUND_Y = 50       -- Fixed ground level HIGH above base
+local platformSegmentLength = 20  -- Length of each solid segment (reduced for more gaps)
+local distanceBeforeGaps = 0 -- Gaps can start immediately
+
+-- Helper to force pink color on parts
+local function paintPink(part)
+    part.Material = Enum.Material.SmoothPlastic
+    part.Color = Color3.fromRGB(255, 105, 180)
+    part.BrickColor = BrickColor.new("Hot pink")
+end
+
+-- Checkpoint System
+local checkpoints = {}
+local lastCheckpointDistance = 0
+local checkpointInterval = 50  -- Checkpoint every 150 studs
+local currentCheckpoint = 0
+local checkpointColor = Color3.fromRGB(100, 255, 100)  -- Green checkpoints
+
+local function createPlatformSegment(zPosition, length)
+    local platform = Instance.new("Part")
+    platform.Name = "PinkPlatform"
+    platform.Size = Vector3.new(platformWidth, platformHeight, length)
+    platform.Position = Vector3.new(0, GROUND_Y, zPosition)
+    platform.Anchored = true
+    platform.CanCollide = true
+    platform.TopSurface = Enum.SurfaceType.Smooth
+    platform.BottomSurface = Enum.SurfaceType.Smooth
+    platform.CastShadow = false
+    paintPink(platform)
+    
+    -- Make it glow
+    local light = Instance.new("PointLight")
+    light.Color = Color3.fromRGB(255, 105, 180)
+    light.Brightness = 0.3 -- gentle
+    light.Range = 12
+    light.Parent = platform
+    
+    platform.Parent = platformsFolder
+    
+    return platform
+end
+
+local function createCheckpoint(zPosition)
+    local checkpoint = Instance.new("Part")
+    checkpoint.Name = "Checkpoint"
+    checkpoint.Size = Vector3.new(platformWidth - 2, 1, 3)
+    checkpoint.Position = Vector3.new(0, GROUND_Y + 2, zPosition)  -- Float above platform
+    checkpoint.Anchored = true
+    checkpoint.Color = checkpointColor
+    checkpoint.Material = Enum.Material.Neon
+    checkpoint.Transparency = 0.5  -- More transparent
+    checkpoint.CanCollide = false
+    checkpoint.Parent = platformsFolder
+    
+    -- Add checkpoint number
+    checkpoint:SetAttribute("CheckpointNumber", currentCheckpoint + 1)
+    
+    -- Add glow effect
+    local light = Instance.new("PointLight")
+    light.Brightness = 2
+    light.Color = checkpointColor
+    light.Range = 25
+    light.Parent = checkpoint
+    
+    print("✅ Created checkpoint #", currentCheckpoint + 1, "at Z:", zPosition)
+    return checkpoint
+end
+
+local function spawnPlatformAhead()
+    local root = getCharacterRoot()
+    if not root then return end
+    
+    -- Only spawn platforms if we're getting close to the end of existing ones
+    if lastPlatformZ < root.Position.Z - CONFIG.spawnDistance - 50 then
+        return  -- Already have enough platforms ahead
+    end
+    
+    -- Check if we should spawn a checkpoint
+    local currentDistance = math.abs(lastPlatformZ)
+    if currentDistance - lastCheckpointDistance >= checkpointInterval then
+        createCheckpoint(lastPlatformZ - 10)  -- Place checkpoint ahead
+        lastCheckpointDistance = currentDistance
+        currentCheckpoint = currentCheckpoint + 1
+    end
+    
+    -- Determine if this section will have a gap (obby-style)
+    -- NO GAPS until player has traveled distanceBeforeGaps
+    local hasGap = false
+    if distanceTraveled > distanceBeforeGaps then
+        -- Ramp gap frequency gently with progress/level so early game is calmer
+        local baseGapChance = 0.4
+        local distanceBump = math.clamp(distanceTraveled / 600, 0, 1) * 0.25  -- up to +25%
+        local levelBump = (currentLevelIndex - 1) * 0.05
+        local gapChance = math.clamp(baseGapChance + distanceBump + levelBump, 0, 0.75)
+        hasGap = math.random() < gapChance
+    end
+    
+    if hasGap then
+        -- Create ACTUAL GAP by not spawning platform (player will fall through)
+        local gapLength = math.random(gapMinLength, gapMaxLength)
+        lastPlatformZ = lastPlatformZ - gapLength
+        print("🕳️ Created ACTUAL GAP (no platform) of", gapLength, "studs at Z:", lastPlatformZ)
+    end
+    
+    -- Create solid platform segment (shorter segments for more frequent gaps)
+    local segmentLength = math.random(platformSegmentLength - 3, platformSegmentLength + 8)  -- 17-28 studs
+    local zPos = lastPlatformZ - segmentLength / 2
+    createPlatformSegment(zPos, segmentLength)
+    lastPlatformZ = lastPlatformZ - segmentLength
+end
+
+local function cleanupOldPlatforms()
+    local root = getCharacterRoot()
+    if not root then return end
+    
+    -- Remove platforms that are far behind the player
+    for _, platform in ipairs(platformsFolder:GetChildren()) do
+        if platform:IsA("Part") and platform.Position.Z > root.Position.Z + 40 then
+            platform:Destroy()
+        end
+    end
+end
+
+local function initializePlatforms()
+    -- Clear old platforms
+    for _, platform in ipairs(platformsFolder:GetChildren()) do
+        platform:Destroy()
+    end
+    
+    -- Remove any default Baseplate that might be grey
+    local baseplate = workspace:FindFirstChild("Baseplate") or workspace:FindFirstChild("Base")
+    if baseplate then
+        baseplate:Destroy()
+        print("🗑️ Removed default baseplate")
+    end
+    
+    -- Reset checkpoint system
+    lastCheckpointDistance = 0
+    currentCheckpoint = 0
+    
+    local root = getCharacterRoot()
+    if not root then 
+        print("⚠️ No root found during platform initialization")
+        return 
+    end
+    
+    -- GROUND_Y is now a constant (50) - keep platforms high!
+    
+    -- Start creating platforms from ahead of the player
+    lastPlatformZ = root.Position.Z + 20  -- Start a bit behind
+    
+    -- Create initial stretch with gaps allowed immediately (but gentler)
+    for i = 1, 14 do
+        local createGap = (i > 3) and (math.random() < 0.4)
+        if createGap then
+            local gapLength = math.random(gapMinLength, gapMaxLength)
+            lastPlatformZ = lastPlatformZ - gapLength
+            print("🕳️ Initial gap of", gapLength, "studs at Z:", lastPlatformZ)
+        end
+        local segmentLength = math.random(platformSegmentLength - 3, platformSegmentLength + 8)
+        local zPos = lastPlatformZ - segmentLength / 2
+        createPlatformSegment(zPos, segmentLength)
+        lastPlatformZ = lastPlatformZ - segmentLength
+    end
+
+    -- Ensure all platforms are painted pink (safety)
+    for _, part in ipairs(platformsFolder:GetChildren()) do
+        if part:IsA("BasePart") then
+            paintPink(part)
+        end
+    end
+    
+    print("🎨 Initialized pink platform system at Y:", GROUND_Y)
+end
+
+-- Periodically repaint platforms to enforce the pink path (catches any leftover defaults)
+local function refreshPinkPath()
+    for _, part in ipairs(platformsFolder:GetChildren()) do
+        if part:IsA("BasePart") then
+            paintPink(part)
+        end
+    end
 end
 
 local function createHud()
@@ -162,7 +360,7 @@ local function createHud()
     local frame = Instance.new("Frame")
     frame.AnchorPoint = Vector2.new(0, 0)
     frame.Position = UDim2.fromScale(0.02, 0.04)
-    frame.Size = UDim2.fromOffset(260, 100)
+    frame.Size = UDim2.fromOffset(260, 120)  -- Increased height for checkpoint label
     frame.BackgroundTransparency = 0.3
     frame.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
     frame.BorderSizePixel = 0
@@ -190,6 +388,7 @@ local function createHud()
     healthLabel = makeLabel()
     streakLabel = makeLabel()
     yearLabel = makeLabel()
+    checkpointLabel = makeLabel()  -- Add checkpoint label
 end
 
 local function updateHud()
@@ -200,7 +399,7 @@ local function updateHud()
 
     levelLabel.Text = string.format("📍 %s", level.name)
     scoreLabel.Text = string.format("⭐ Score: %d (x%.1f)", math.floor(score), streakMultiplier)
-    pistachioLabel.Text = string.format("🥜 Pistachios: %d | 💰 %d", pistachioCount, totalPistachios)
+    pistachioLabel.Text = string.format("🥜 Pistachios: %d | 💰 %d", pistachiosCollectedInRun, totalPistachios)
     
     -- Revives remaining (Subway Surfers style)
     local revivesLeft = CONFIG.maxRevivesPerRun - revivesUsedThisRun
@@ -225,6 +424,10 @@ local function updateHud()
     local yearPercent = (yearMeter / maxYearMeter) * 100
     yearLabel.Text = string.format("📚 Year Progress: %.0f%%", yearPercent)
     yearLabel.TextColor3 = Color3.fromRGB(100, 200, 255)
+    
+    -- Checkpoint display
+    checkpointLabel.Text = string.format("✅ Checkpoint: #%d", lastCheckpointReached)
+    checkpointLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
 end
 
 local function setSkyBackground()
@@ -256,11 +459,14 @@ local function createPersonObstacle(obstacleDef, position)
     local hitbox = Instance.new("Part")
     hitbox.Name = "Hitbox"
     hitbox.Size = Vector3.new(4, 6, 1)
-    hitbox.Transparency = 1
+    hitbox.Transparency = 0
     hitbox.Anchored = true
-    hitbox.CanCollide = false
+    hitbox.CanCollide = true
+    hitbox.Material = Enum.Material.Metal
+    hitbox.Color = Color3.fromRGB(200, 80, 80)
     hitbox.Position = position + Vector3.new(0, 3, 0)
     hitbox.Parent = model
+    connectLethalTouch(hitbox)
 
     -- Create detection zone (invisible sphere for proximity detection)
     local detectionZone = Instance.new("Part")
@@ -270,8 +476,10 @@ local function createPersonObstacle(obstacleDef, position)
     detectionZone.Transparency = 1
     detectionZone.Anchored = true
     detectionZone.CanCollide = false
+    detectionZone.CanTouch = true  -- allow lethal touch even if non-collide
     detectionZone.Position = position + Vector3.new(0, 3, 0)
     detectionZone.Parent = model
+    connectLethalTouch(detectionZone)
 
     local billboard = Instance.new("BillboardGui")
     billboard.Name = "CharacterImage"
@@ -302,7 +510,31 @@ local function createPersonObstacle(obstacleDef, position)
     model:SetAttribute("IsChasing", false)
     model:SetAttribute("OriginalPosition", position)
 
+    connectModelLethal(model)
+
     return model
+end
+
+-- Make any part lethal to the player on touch
+local function connectLethalTouch(part)
+    part.Touched:Connect(function(hit)
+        local humanoid = hit.Parent and hit.Parent:FindFirstChildOfClass("Humanoid")
+        if humanoid and humanoid.Parent == player.Character and isAlive and not isInvulnerable then
+            crashPlayer()
+        end
+    end)
+end
+
+-- Make every BasePart inside a model lethal + solid
+local function connectModelLethal(model)
+    for _, descendant in ipairs(model:GetDescendants()) do
+        if descendant:IsA("BasePart") then
+            if descendant.Name ~= "DetectionZone" then
+                descendant.CanCollide = true
+            end
+            connectLethalTouch(descendant)
+        end
+    end
 end
 
 local function createStaticObstacle(obstacleDef, position)
@@ -312,16 +544,62 @@ local function createStaticObstacle(obstacleDef, position)
 
     local hitbox = Instance.new("Part")
     hitbox.Name = "Hitbox"
-    hitbox.Size = Vector3.new(obstacleDef.width, obstacleDef.height, 2)
-    hitbox.Color = obstacleDef.color
-    hitbox.Anchored = true
-    hitbox.CanCollide = false -- Disable CanCollide to prevent physics interference
-    hitbox.Position = position + Vector3.new(0, obstacleDef.height/2, 0)
-    hitbox.Parent = model
+    
+    -- Randomize obstacle shapes for variety
+    local shapeChoice = math.random(1, 5)
+    if shapeChoice == 1 then
+        hitbox.Shape = Enum.PartType.Cylinder
+        hitbox.Size = Vector3.new(obstacleDef.height, obstacleDef.width, obstacleDef.width)
+        hitbox.Orientation = Vector3.new(0, 0, 90)  -- Rotate cylinder
+        hitbox.Color = obstacleDef.color
+            hitbox.Material = Enum.Material.Metal
+    elseif shapeChoice == 2 then
+        hitbox.Shape = Enum.PartType.Ball
+        hitbox.Size = Vector3.new(obstacleDef.width * 1.2, obstacleDef.width * 1.2, obstacleDef.width * 1.2)
+        hitbox.Color = obstacleDef.color
+            hitbox.Material = Enum.Material.Neon
+    elseif shapeChoice == 3 then
+        -- Wedge shape
+        hitbox:Destroy()  -- Don't need the Part anymore
+        local wedge = Instance.new("WedgePart")
+        wedge.Name = "Hitbox"
+        wedge.Size = Vector3.new(obstacleDef.width, obstacleDef.height, 3)
+        wedge.Color = obstacleDef.color
+            wedge.Material = Enum.Material.Concrete
+        wedge.Anchored = true
+        wedge.CanCollide = false
+        wedge.Position = position + Vector3.new(0, obstacleDef.height/2, 0)
+        wedge.Parent = model
+        hitbox = wedge
+    elseif shapeChoice == 4 then
+        -- Tall thin pole
+        hitbox.Size = Vector3.new(1.5, obstacleDef.height * 1.5, 1.5)
+        hitbox.Color = obstacleDef.color
+            hitbox.Material = Enum.Material.Glass
+    else
+        -- Regular block
+        hitbox.Size = Vector3.new(obstacleDef.width, obstacleDef.height, 2)
+        hitbox.Color = obstacleDef.color
+            hitbox.Material = Enum.Material.SmoothPlastic
+    end
+    
+    -- Set common properties (for non-wedge parts)
+    if hitbox.ClassName == "Part" then
+        hitbox.Anchored = true
+        hitbox.CanCollide = true  -- solid
+        hitbox.Position = position + Vector3.new(0, obstacleDef.height/2, 0)
+        hitbox.Parent = model
+        connectLethalTouch(hitbox)
+    elseif hitbox.ClassName == "WedgePart" then
+        connectLethalTouch(hitbox)
+        hitbox.CanCollide = true
+    end
 
     model.PrimaryPart = hitbox
     model:SetAttribute("Type", "static")
-    model:SetAttribute("Damage", 25) -- Static obstacles deal 25 damage
+    model:SetAttribute("Damage", 25)
+
+    connectModelLethal(model)
 
     return model
 end
@@ -333,19 +611,43 @@ local function createMovingObstacle(obstacleDef, position)
 
     local hitbox = Instance.new("Part")
     hitbox.Name = "Hitbox"
-    hitbox.Size = Vector3.new(obstacleDef.width, obstacleDef.height, 2)
+    
+    -- Different shapes for moving obstacles
+    local shapeChoice = math.random(1, 4)
+    if shapeChoice == 1 then
+        hitbox.Shape = Enum.PartType.Ball
+            hitbox.Size = Vector3.new(obstacleDef.width * 1.2, obstacleDef.width * 1.2, obstacleDef.width * 1.2)
+            hitbox.Material = Enum.Material.Neon  -- Glowing balls
+    elseif shapeChoice == 2 then
+        hitbox.Shape = Enum.PartType.Cylinder
+        hitbox.Size = Vector3.new(obstacleDef.height, obstacleDef.width, obstacleDef.width)
+        hitbox.Orientation = Vector3.new(0, 0, 90)
+            hitbox.Material = Enum.Material.Metal
+    elseif shapeChoice == 3 then
+        -- Rotating cube
+        hitbox.Size = Vector3.new(obstacleDef.width, obstacleDef.width, obstacleDef.width)
+        hitbox.Orientation = Vector3.new(45, 45, 0)
+            hitbox.Material = Enum.Material.ForceField
+    else
+        hitbox.Size = Vector3.new(obstacleDef.width, obstacleDef.height, 2)
+            hitbox.Material = Enum.Material.SmoothPlastic
+    end
+    
     hitbox.Color = obstacleDef.color
     hitbox.Anchored = true
-    hitbox.CanCollide = false -- Disable CanCollide to prevent physics interference
+    hitbox.CanCollide = true
     hitbox.Position = position + Vector3.new(0, obstacleDef.height/2, 0)
     hitbox.Parent = model
+    connectLethalTouch(hitbox)
 
     model.PrimaryPart = hitbox
     model:SetAttribute("Type", "moving")
-    model:SetAttribute("Damage", 35) -- Moving obstacles deal 35 damage (higher since they're harder)
+    model:SetAttribute("Damage", 35)
     model:SetAttribute("Speed", obstacleDef.speed)
     model:SetAttribute("Direction", math.random() > 0.5 and 1 or -1)
     model:SetAttribute("OriginalX", position.X)
+
+    connectModelLethal(model)
 
     return model
 end
@@ -361,6 +663,17 @@ local function crashPlayer()
     isGamePaused = true
     currentSpeed = 0
     print("💥 CRASH! Player hit an obstacle!")
+    
+    -- Play funny crash sound
+    local crashSound = Instance.new("Sound")
+    crashSound.SoundId = "rbxasset://sounds/electrodes_hit1.ogg"  -- Built-in funny bonk sound
+    crashSound.Volume = 0.7
+    crashSound.PlaybackSpeed = 0.8  -- Slightly slower for comedic effect
+    crashSound.Parent = workspace
+    crashSound:Play()
+    task.delay(2, function()
+        crashSound:Destroy()
+    end)
     
     -- Dramatic crash screen flash
     local crashFlash = Instance.new("Frame")
@@ -422,7 +735,7 @@ local function showReviveScreen(crashFlash)
     info.Position = UDim2.fromScale(0, 0.25)
     info.Size = UDim2.new(1, 0, 0.25, 0)
     info.BackgroundTransparency = 1
-    info.Text = string.format("Score: %d | Pistachios: %d", math.floor(score), pistachioCount)
+    info.Text = string.format("Score: %d | Pistachios: %d", math.floor(score), pistachiosCollectedInRun)
     info.TextColor3 = Color3.fromRGB(200, 200, 200)
     info.TextSize = 18
     info.Font = Enum.Font.Gotham
@@ -574,12 +887,12 @@ local function gameOver()
     runStats.BackgroundTransparency = 1
     runStats.Text = string.format(
         "Final Score: %d\n\nPistachios Collected: %d\nDistance Traveled: %.1fm\nMax Study Streak: %d\nYear Progress: %.1f%%\n\nPistachios Earned: +%d",
-        score, 
-        pistachiosCollectedInRun, 
+        score,
+        pistachiosCollectedInRun,
         distanceTraveled,
         studyStreakLevel * CONFIG.studyStreakThreshold + (studyStreak % CONFIG.studyStreakThreshold),
         (yearMeter / maxYearMeter) * 100,
-        pistachioCount
+        pistachiosCollectedInRun
     )
     runStats.TextColor3 = Color3.fromRGB(240, 240, 240)
     runStats.TextSize = 16
@@ -616,7 +929,7 @@ local function gameOver()
 end
 
 local function respawnPlayer()
-    -- Reset run stats (keep totalPistachios persistent)
+    -- Reset run stats (keep totalPistachios AND checkpoints persistent)
     isAlive = true
     isGamePaused = false
     score = 0
@@ -652,7 +965,17 @@ local function respawnPlayer()
         pistachio:Destroy()
     end
     
-    print("🔄 New run started! Total pistachios:", totalPistachios)
+    -- Clear and reinitialize platforms (checkpoints persist)
+    initializePlatforms()
+    
+    -- Position character back at last checkpoint
+    local root = getCharacterRoot()
+    if root then
+        root.CFrame = CFrame.new(savedCheckpointPosition)
+        print("🔄 Character repositioned at checkpoint #" .. lastCheckpointReached)
+    end
+    
+    print("🔄 New run started! Total pistachios:", totalPistachios, "| Checkpoint:", lastCheckpointReached)
     updateHud()
 end
 
@@ -664,7 +987,7 @@ local function createPistachio(position, rarity)
     local pistachio = Instance.new("Part")
     pistachio.Name = "Pistachio_" .. rarity
     pistachio.Shape = Enum.PartType.Ball
-    pistachio.Size = Vector3.new(2, 2, 2)  -- Slightly larger for visibility
+    pistachio.Size = Vector3.new(2.5, 2.5, 2.5)  -- Larger for better visibility and collection
     pistachio.Color = pistachioData.color
     pistachio.Anchored = true
     pistachio.CanCollide = false
@@ -691,13 +1014,28 @@ local function createPistachio(position, rarity)
     
     -- Make rare pistachios bigger
     if rarity == "rare" then
-        pistachio.Size = Vector3.new(2.2, 2.2, 2.2)
+        pistachio.Size = Vector3.new(3.5, 3.5, 3.5)
     elseif rarity == "gold" then
-        pistachio.Size = Vector3.new(1.8, 1.8, 1.8)
+        pistachio.Size = Vector3.new(3, 3, 3)
     end
 
-    -- NO Touched event - we handle collection in updateActiveObjects for consistent behavior
-    -- This prevents double-collection issues
+    -- Add Touched event as backup collection method
+    pistachio.Touched:Connect(function(hit)
+        if hit and hit.Parent then
+            local humanoid = hit.Parent:FindFirstChildOfClass("Humanoid")
+            if humanoid and not pistachio:GetAttribute("Collected") then
+                print("🎯 Coin touched by player!")
+                pistachio:SetAttribute("Collected", true)
+                local success, err = pcall(function()
+                    collectPistachio(pistachio, rarity)
+                end)
+                if not success then
+                    print("⚠️ Error in touch collection:", err)
+                    pistachio:Destroy()
+                end
+            end
+        end
+    end)
 
     return pistachio
 end
@@ -888,9 +1226,8 @@ local function spawnObstacle(levelIndex)
     if not root then return end
     
     local laneX = CONFIG.lanes[math.random(1, #CONFIG.lanes)]
-    -- Use player's Y minus offset (to get ground level relative to player)
-    local groundY = root.Position.Y - 3  -- Player root is ~3 studs above ground
-    local spawnPosition = Vector3.new(laneX, groundY, root.Position.Z - CONFIG.spawnDistance)
+    -- Spawn obstacles on the pink platform
+    local spawnPosition = Vector3.new(laneX, GROUND_Y + 3, root.Position.Z - CONFIG.spawnDistance)
     
     -- Randomly choose obstacle type (weighted)
     local obstacleType = math.random(1, 10)
@@ -981,18 +1318,29 @@ local function spawnPistachio()
     
     print("🥜 Spawning pistachios - Player at:", root.Position)
     
-    -- Spawn pistachios in front of the player (negative Z is forward)
-    for i = 1, CONFIG.pistachioBurst do
-        local laneX = CONFIG.lanes[math.random(1, #CONFIG.lanes)]
+    -- Spawn FEW coins (halved: 1-2 per batch)
+    local coinCount = math.random(1, 2)
+    for i = 1, coinCount do
+        -- Randomly place in lanes
+        local laneChoice = math.random(1, #CONFIG.lanes)
+        local laneX = CONFIG.lanes[laneChoice]
+        
+        -- Add some horizontal variation
+        local horizontalVariation = (math.random() - 0.5) * 2
+        laneX = laneX + horizontalVariation
+        
         -- Spawn in front: subtract from Z (more negative = further ahead)
-        local zOffset = -(CONFIG.spawnDistance + (i * 8))
+        local zOffset = -(CONFIG.spawnDistance + (i * 8))  -- Slightly more spacing
+        
+        -- Place coins at player running height for easy collection
         local spawnPosition = Vector3.new(
             laneX,
-            root.Position.Y - 2, -- Slightly below player (player is ~3 studs tall, root is at center)
+            GROUND_Y + 4, -- Player height (was +2, now +4 for better alignment)
             root.Position.Z + zOffset
         )
+        
         local rarity = determinePistachioRarity()
-        print("  Pistachio", i, "at:", spawnPosition, "Rarity:", rarity)
+        print("  Coin", i, "at:", spawnPosition, "Rarity:", rarity)
         createPistachio(spawnPosition, rarity)
     end
 end
@@ -1019,7 +1367,10 @@ local function updateActiveObjects(dt)
             
             -- CHECK FOR COLLISION WITH PLAYER (SUBWAY SURFERS STYLE: ONE-HIT CRASH)
             local distance = (hitbox.Position - root.Position).Magnitude
-            if distance <= 4 and not isInvulnerable and isAlive then -- 4 studs collision range
+            -- Increased collision range for varied shapes
+            local collisionRange = 5  -- Increased from 4 to 5 studs
+            
+            if distance <= collisionRange and not isInvulnerable and isAlive then
                 print("💥 COLLISION DETECTED! Obstacle:", obstacle.Name, "Distance:", distance)
                 crashPlayer()  -- One-hit death like Subway Surfers!
                 
@@ -1083,9 +1434,9 @@ local function updateActiveObjects(dt)
             if pistachio.Position.Z > root.Position.Z + CONFIG.despawnDistance then
                 pistachio:Destroy()
             else
-                -- Check for pistachio collection
+                -- Check for pistachio collection (increased range)
                 local distance = (pistachio.Position - root.Position).Magnitude
-                if distance <= 3.5 then -- Collection range
+                if distance <= 7 then -- Increased collection range to 7 studs
                     local rarity = pistachio:GetAttribute("Rarity") or "common"
                     print("🌰 PISTACHIO COLLECTED! Rarity:", rarity, "Distance:", distance)
                     
@@ -1101,11 +1452,12 @@ local function updateActiveObjects(dt)
                     continue
                 end
                 
-                -- Magnetic attraction when close
-                if distance <= CONFIG.pistachioMagnetRange then
+                -- Magnetic attraction when close (increased range)
+                if distance <= CONFIG.pistachioMagnetRange + 4 then
                     local direction = (root.Position - pistachio.Position).Unit
-                    local magnetForce = (CONFIG.pistachioMagnetRange - distance) / CONFIG.pistachioMagnetRange
-                    local pullSpeed = 15 * magnetForce
+                    local magnetRange = CONFIG.pistachioMagnetRange + 4
+                    local magnetForce = (magnetRange - distance) / magnetRange
+                    local pullSpeed = 25 * magnetForce  -- Increased pull speed
                     pistachio.Position = pistachio.Position + direction * pullSpeed * dt
                 end
             end
@@ -1176,6 +1528,8 @@ end
 -- Timers as module-level variables to persist properly
 local obstacleTimer = 0
 local pistachioTimer = 0
+local hudUpdateTimer = 0
+local pinkRefreshTimer = 0
 local gameLoopConnection = nil  -- Track the connection
 
 local function startRunner()
@@ -1183,13 +1537,22 @@ local function startRunner()
     print("🥜 Revive Cost:", CONFIG.reviveCost, "pistachios")
     print("❤️ Max Revives Per Run:", CONFIG.maxRevivesPerRun)
     
+    -- Clean any leftovers so first spawn shows new visuals immediately
+    for _, folder in ipairs({obstaclesFolder, pistachiosFolder, platformsFolder}) do
+        for _, child in ipairs(folder:GetChildren()) do
+            child:Destroy()
+        end
+    end
+
     createHud()
     setSkyBackground()
     updateHud()
+    initializePlatforms()  -- Create initial platforms
     
     -- Reset timers
     obstacleTimer = 0
     pistachioTimer = 0
+    hudUpdateTimer = 0
 
     connectAttackInput()
     
@@ -1205,11 +1568,27 @@ local function startRunner()
         end
         
         distanceTraveled += currentSpeed * dt
+        -- Advance year progress with distance traveled
+        yearMeter = math.min(maxYearMeter, yearMeter + currentSpeed * dt * 0.6)
         local newLevelIndex = getLevelForDistance(distanceTraveled)
         if newLevelIndex ~= currentLevelIndex then
             currentLevelIndex = newLevelIndex
             print("🎓 PROMOTED TO:", levels[currentLevelIndex].name)
             updateHud()
+        end
+
+        -- Periodic HUD refresh so stats/progress stay live
+        hudUpdateTimer += dt
+        if hudUpdateTimer >= 0.25 then
+            hudUpdateTimer = 0
+            updateHud()
+        end
+
+        -- Periodic repaint to ensure the whole path stays pink
+        pinkRefreshTimer += dt
+        if pinkRefreshTimer >= 3 then
+            pinkRefreshTimer = 0
+            refreshPinkPath()
         end
 
         local currentLevel = levels[currentLevelIndex]
@@ -1227,7 +1606,9 @@ local function startRunner()
         end
 
         -- Make obstacles spawn more frequently as you progress
-        local difficultyMultiplier = 1 + (currentLevelIndex - 1) * 0.1
+        -- Difficulty ramps with level and distance, but starts gentle
+        local distanceRamp = 1 + math.clamp(distanceTraveled / 800, 0, 1) * 0.4
+        local difficultyMultiplier = distanceRamp + (currentLevelIndex - 1) * 0.1
         local adjustedObstacleInterval = currentLevel.obstacleInterval / difficultyMultiplier
 
         if obstacleTimer >= adjustedObstacleInterval then
@@ -1235,7 +1616,7 @@ local function startRunner()
             spawnObstacle(currentLevelIndex)
             
             -- Occasional double obstacles only in higher levels
-            if currentLevelIndex >= 3 and math.random() > 0.8 then  -- 20% chance in year 3+
+            if currentLevelIndex >= 4 and distanceTraveled > 700 and math.random() > 0.9 then  -- Rare doubles, only late
                 task.wait(0.5)
                 spawnObstacle(currentLevelIndex)
             end
@@ -1247,16 +1628,93 @@ local function startRunner()
             print("⏰ Pistachio timer triggered! Spawning batch...")
             spawnPistachio()
         end
+        
+        -- Continuously spawn platforms and structures throughout the runner
+        spawnPlatformAhead()
+        cleanupOldPlatforms()
+        checkForCheckpointTouch()  -- Check for checkpoint touches
 
         updateActiveObjects(dt)
+        
+        -- Check if player fell through a gap (fall detection)
+        local root = getCharacterRoot()
+        if root and root.Position.Y < GROUND_Y - 10 then  -- Fell 10 studs below platform
+            print("💀 Player fell through a gap!")
+            crashPlayer()
+        end
     end)
 end
 
-player.CharacterAdded:Connect(function()
-    task.wait(0.2)
+local function checkForCheckpointTouch()
+    local root = getCharacterRoot()
+    if not root then return end
+    
+    -- Check if player is touching any checkpoint
+    for _, checkpoint in ipairs(platformsFolder:GetChildren()) do
+        if checkpoint.Name == "Checkpoint" and checkpoint:IsA("BasePart") then
+            local checkpointNum = checkpoint:GetAttribute("CheckpointNumber") or 0
+            if checkpointNum > lastCheckpointReached then
+                local distance = (checkpoint.Position - root.Position).Magnitude
+                if distance <= 8 then  -- Touch range
+                    lastCheckpointReached = checkpointNum
+                    savedCheckpointPosition = checkpoint.Position + Vector3.new(0, 5, 0)
+                    
+                    -- Visual feedback
+                    checkpoint.Transparency = 0.7
+                    print("✅ CHECKPOINT #" .. checkpointNum .. " REACHED! Progress saved.")
+                    
+                    -- Create checkpoint effect
+                    task.spawn(function()
+                        local effect = Instance.new("Part")
+                        effect.Shape = Enum.PartType.Ball
+                        effect.Size = Vector3.new(1, 1, 1)
+                        effect.Position = checkpoint.Position
+                        effect.Anchored = true
+                        effect.CanCollide = false
+                        effect.Color = checkpointColor
+                        effect.Material = Enum.Material.Neon
+                        effect.Transparency = 0.3
+                        effect.Parent = workspace
+                        
+                        local tween = TweenService:Create(
+                            effect,
+                            TweenInfo.new(1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                            {Size = Vector3.new(15, 15, 15), Transparency = 1}
+                        )
+                        tween:Play()
+                        task.wait(1)
+                        effect:Destroy()
+                    end)
+                end
+            end
+        end
+    end
+end
+
+player.CharacterAdded:Connect(function(character)
+    task.wait(0.5)  -- Wait a bit longer for character to fully load
+    
+    -- Position character on the pink platform (at last checkpoint)
+    local humanoidRoot = character:WaitForChild("HumanoidRootPart", 5)
+    if humanoidRoot then
+        -- Set character position to be standing on the platform
+        humanoidRoot.CFrame = CFrame.new(savedCheckpointPosition)
+        print("🎮 Character positioned on platform at:", savedCheckpointPosition)
+    else
+        warn("⚠️ Could not find HumanoidRootPart")
+    end
+    
     startRunner()
 end)
 
 if player.Character then
+    task.wait(0.5)
+    local humanoidRoot = player.Character:FindFirstChild("HumanoidRootPart")
+    if humanoidRoot then
+        humanoidRoot.CFrame = CFrame.new(savedCheckpointPosition)
+        print("🎮 Initial character positioned")
+    end
     startRunner()
+else
+    print("⚠️ Waiting for character to spawn...")
 end
