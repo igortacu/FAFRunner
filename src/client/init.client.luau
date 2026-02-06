@@ -19,7 +19,7 @@ local CONFIG = {
     obstacleDetectionRange = 15,
     obstacleChaseSpeed = 12,
     -- SUBWAY SURFERS STYLE: One-hit death with continue system
-    reviveCost = 50, -- Cost in pistachios to continue after crash
+    reviveCost = 5, -- Cost in pistachios to continue after crash
     maxRevivesPerRun = 2, -- Can only revive twice per run
     speedPenalty = 0.7,
     -- Pistachio economy
@@ -126,6 +126,13 @@ local isInvulnerable = false
 local currentSpeed = CONFIG.runSpeed
 local revivesUsedThisRun = 0  -- Track revives used this run
 local isGamePaused = false  -- For revive screen
+local gameLoopConnection = nil  -- Track the Heartbeat connection
+
+-- Timers as module-level variables to persist properly
+local obstacleTimer = 0
+local pistachioTimer = 0
+local hudUpdateTimer = 0
+local pinkRefreshTimer = 0
 
 -- Study Streak system
 local studyStreak = 0
@@ -137,7 +144,7 @@ local streakMultiplier = 1
 -- Year progress system
 local yearProgress = 0
 local yearMeter = 0
-local maxYearMeter = 1000
+local maxYearMeter = 5000
 
 -- Checkpoint system variables
 local lastCheckpointReached = 0
@@ -161,17 +168,16 @@ local platformWidth = 18  -- Width across all lanes
 local platformHeight = 1  -- Thickness
 local gapMinLength = 5    -- Minimum gap size (smaller for easier early jumps)
 local gapMaxLength = 9    -- Maximum gap size (tighter gaps overall)
-local platformColor = Color3.fromRGB(255, 105, 180)  -- Hot pink!
+local platformColor = Color3.fromRGB(40, 40, 45)  -- Dark subtle ground
 local lastPlatformZ = 0   -- Track where we last spawned a platform
 local GROUND_Y = 50       -- Fixed ground level HIGH above base
 local platformSegmentLength = 20  -- Length of each solid segment (reduced for more gaps)
 local distanceBeforeGaps = 0 -- Gaps can start immediately
 
--- Helper to force pink color on parts
-local function paintPink(part)
+-- Helper to style platform parts (dark, subtle ground)
+local function paintPlatform(part)
     part.Material = Enum.Material.SmoothPlastic
-    part.Color = Color3.fromRGB(255, 105, 180)
-    part.BrickColor = BrickColor.new("Hot pink")
+    part.Color = Color3.fromRGB(40, 40, 45)
 end
 
 -- Checkpoint System
@@ -183,7 +189,7 @@ local checkpointColor = Color3.fromRGB(100, 255, 100)  -- Green checkpoints
 
 local function createPlatformSegment(zPosition, length)
     local platform = Instance.new("Part")
-    platform.Name = "PinkPlatform"
+    platform.Name = "RunnerPlatform"
     platform.Size = Vector3.new(platformWidth, platformHeight, length)
     platform.Position = Vector3.new(0, GROUND_Y, zPosition)
     platform.Anchored = true
@@ -191,14 +197,7 @@ local function createPlatformSegment(zPosition, length)
     platform.TopSurface = Enum.SurfaceType.Smooth
     platform.BottomSurface = Enum.SurfaceType.Smooth
     platform.CastShadow = false
-    paintPink(platform)
-    
-    -- Make it glow
-    local light = Instance.new("PointLight")
-    light.Color = Color3.fromRGB(255, 105, 180)
-    light.Brightness = 0.3 -- gentle
-    light.Range = 12
-    light.Parent = platform
+    paintPlatform(platform)
     
     platform.Parent = platformsFolder
     
@@ -328,21 +327,21 @@ local function initializePlatforms()
         lastPlatformZ = lastPlatformZ - segmentLength
     end
 
-    -- Ensure all platforms are painted pink (safety)
+    -- Ensure all platforms are styled (safety)
     for _, part in ipairs(platformsFolder:GetChildren()) do
         if part:IsA("BasePart") then
-            paintPink(part)
+            paintPlatform(part)
         end
     end
     
-    print("🎨 Initialized pink platform system at Y:", GROUND_Y)
+    print("🎨 Initialized platform system at Y:", GROUND_Y)
 end
 
--- Periodically repaint platforms to enforce the pink path (catches any leftover defaults)
-local function refreshPinkPath()
+-- Periodically repaint platforms to enforce the style (catches any leftover defaults)
+local function refreshPlatformStyle()
     for _, part in ipairs(platformsFolder:GetChildren()) do
         if part:IsA("BasePart") then
-            paintPink(part)
+            paintPlatform(part)
         end
     end
 end
@@ -360,7 +359,7 @@ local function createHud()
     local frame = Instance.new("Frame")
     frame.AnchorPoint = Vector2.new(0, 0)
     frame.Position = UDim2.fromScale(0.02, 0.04)
-    frame.Size = UDim2.fromOffset(260, 120)  -- Increased height for checkpoint label
+    frame.Size = UDim2.fromOffset(320, 230)  -- Room for all 7 labels
     frame.BackgroundTransparency = 0.3
     frame.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
     frame.BorderSizePixel = 0
@@ -392,6 +391,10 @@ local function createHud()
 end
 
 local function updateHud()
+    if not levelLabel or not scoreLabel or not pistachioLabel then
+        return  -- HUD not created yet
+    end
+    
     local level = levels[currentLevelIndex]
     if not level then
         return
@@ -451,6 +454,17 @@ local function getLevelForDistance(distance)
     return selectedIndex
 end
 
+-- Forward declarations (these functions reference each other, so we declare them first)
+local connectLethalTouch
+local connectModelLethal
+local crashPlayer
+local showReviveScreen
+local gameOver
+local collectPistachio
+local checkForCheckpointTouch
+local startRunner
+local respawnPlayer
+
 local function createPersonObstacle(obstacleDef, position)
     local model = Instance.new("Model")
     model.Name = obstacleDef.name
@@ -468,7 +482,7 @@ local function createPersonObstacle(obstacleDef, position)
     hitbox.Parent = model
     connectLethalTouch(hitbox)
 
-    -- Create detection zone (invisible sphere for proximity detection)
+    -- Create detection zone (invisible sphere for chase AI only — NOT lethal)
     local detectionZone = Instance.new("Part")
     detectionZone.Name = "DetectionZone"
     detectionZone.Shape = Enum.PartType.Ball
@@ -476,10 +490,9 @@ local function createPersonObstacle(obstacleDef, position)
     detectionZone.Transparency = 1
     detectionZone.Anchored = true
     detectionZone.CanCollide = false
-    detectionZone.CanTouch = true  -- allow lethal touch even if non-collide
+    detectionZone.CanTouch = false  -- NOT lethal, only used for distance checks in updateActiveObjects
     detectionZone.Position = position + Vector3.new(0, 3, 0)
     detectionZone.Parent = model
-    connectLethalTouch(detectionZone)
 
     local billboard = Instance.new("BillboardGui")
     billboard.Name = "CharacterImage"
@@ -516,7 +529,7 @@ local function createPersonObstacle(obstacleDef, position)
 end
 
 -- Make any part lethal to the player on touch
-local function connectLethalTouch(part)
+connectLethalTouch = function(part)
     part.Touched:Connect(function(hit)
         local humanoid = hit.Parent and hit.Parent:FindFirstChildOfClass("Humanoid")
         if humanoid and humanoid.Parent == player.Character and isAlive and not isInvulnerable then
@@ -526,12 +539,10 @@ local function connectLethalTouch(part)
 end
 
 -- Make every BasePart inside a model lethal + solid
-local function connectModelLethal(model)
+connectModelLethal = function(model)
     for _, descendant in ipairs(model:GetDescendants()) do
-        if descendant:IsA("BasePart") then
-            if descendant.Name ~= "DetectionZone" then
-                descendant.CanCollide = true
-            end
+        if descendant:IsA("BasePart") and descendant.Name ~= "DetectionZone" then
+            descendant.CanCollide = true
             connectLethalTouch(descendant)
         end
     end
@@ -575,7 +586,7 @@ local function createStaticObstacle(obstacleDef, position)
         -- Tall thin pole
         hitbox.Size = Vector3.new(1.5, obstacleDef.height * 1.5, 1.5)
         hitbox.Color = obstacleDef.color
-            hitbox.Material = Enum.Material.Glass
+            hitbox.Material = Enum.Material.Metal
     else
         -- Regular block
         hitbox.Size = Vector3.new(obstacleDef.width, obstacleDef.height, 2)
@@ -627,7 +638,7 @@ local function createMovingObstacle(obstacleDef, position)
         -- Rotating cube
         hitbox.Size = Vector3.new(obstacleDef.width, obstacleDef.width, obstacleDef.width)
         hitbox.Orientation = Vector3.new(45, 45, 0)
-            hitbox.Material = Enum.Material.ForceField
+            hitbox.Material = Enum.Material.Concrete
     else
         hitbox.Size = Vector3.new(obstacleDef.width, obstacleDef.height, 2)
             hitbox.Material = Enum.Material.SmoothPlastic
@@ -653,7 +664,7 @@ local function createMovingObstacle(obstacleDef, position)
 end
 
 -- SUBWAY SURFERS STYLE: One-hit death with revive option
-local function crashPlayer()
+crashPlayer = function()
     if not isAlive or isInvulnerable then 
         print("Player already crashed or invulnerable")
         return 
@@ -663,6 +674,20 @@ local function crashPlayer()
     isGamePaused = true
     currentSpeed = 0
     print("💥 CRASH! Player hit an obstacle!")
+    
+    -- Freeze the character so they stop running
+    local character = player.Character
+    if character then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            humanoid.WalkSpeed = 0
+            humanoid.JumpPower = 0
+        end
+        local root = character:FindFirstChild("HumanoidRootPart")
+        if root then
+            root.Anchored = true  -- Completely freeze in place
+        end
+    end
     
     -- Play funny crash sound
     local crashSound = Instance.new("Sound")
@@ -706,7 +731,7 @@ local function crashPlayer()
     end
 end
 
-local function showReviveScreen(crashFlash)
+showReviveScreen = function(crashFlash)
     local reviveGui = Instance.new("Frame")
     reviveGui.Name = "ReviveScreen"
     reviveGui.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -826,6 +851,20 @@ local function showReviveScreen(crashFlash)
         isInvulnerable = true
         currentSpeed = CONFIG.runSpeed
         
+        -- Unfreeze the character
+        local character = player.Character
+        if character then
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                humanoid.WalkSpeed = 16
+                humanoid.JumpPower = 50
+            end
+            local root = character:FindFirstChild("HumanoidRootPart")
+            if root then
+                root.Anchored = false
+            end
+        end
+        
         -- Reset streak on revive
         studyStreak = 0
         studyStreakLevel = 0
@@ -856,7 +895,13 @@ local function showReviveScreen(crashFlash)
     end)
 end
 
-local function gameOver()
+gameOver = function()
+    -- Stop the game loop completely
+    if gameLoopConnection then
+        gameLoopConnection:Disconnect()
+        gameLoopConnection = nil
+    end
+    
     -- Create game over screen
     local gameOverGui = Instance.new("ScreenGui")
     gameOverGui.Name = "GameOverGui"
@@ -928,7 +973,7 @@ local function gameOver()
     end)
 end
 
-local function respawnPlayer()
+respawnPlayer = function()
     -- Reset run stats (keep totalPistachios AND checkpoints persistent)
     isAlive = true
     isGamePaused = false
@@ -968,15 +1013,26 @@ local function respawnPlayer()
     -- Clear and reinitialize platforms (checkpoints persist)
     initializePlatforms()
     
-    -- Position character back at last checkpoint
-    local root = getCharacterRoot()
-    if root then
-        root.CFrame = CFrame.new(savedCheckpointPosition)
-        print("🔄 Character repositioned at checkpoint #" .. lastCheckpointReached)
+    -- Unfreeze and reposition character
+    local character = player.Character
+    if character then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            humanoid.WalkSpeed = 16
+            humanoid.JumpPower = 50
+        end
+        local root = character:FindFirstChild("HumanoidRootPart")
+        if root then
+            root.Anchored = false
+            root.CFrame = CFrame.new(savedCheckpointPosition)
+            print("🔄 Character repositioned at checkpoint #" .. lastCheckpointReached)
+        end
     end
     
     print("🔄 New run started! Total pistachios:", totalPistachios, "| Checkpoint:", lastCheckpointReached)
-    updateHud()
+    
+    -- Fully restart the game loop
+    startRunner()
 end
 
 local function createPistachio(position, rarity)
@@ -1040,7 +1096,7 @@ local function createPistachio(position, rarity)
     return pistachio
 end
 
-local function collectPistachio(pistachio, rarity)
+collectPistachio = function(pistachio, rarity)
     -- Prevent double-collection and nil checks
     if not pistachio or not pistachio.Parent then
         print("⚠️ Pistachio already destroyed or nil")
@@ -1226,11 +1282,10 @@ local function spawnObstacle(levelIndex)
     if not root then return end
     
     local laneX = CONFIG.lanes[math.random(1, #CONFIG.lanes)]
-    -- Spawn obstacles on the pink platform
+    -- Spawn obstacles on the platform
     local spawnPosition = Vector3.new(laneX, GROUND_Y + 3, root.Position.Z - CONFIG.spawnDistance)
     
     -- Randomly choose obstacle type (weighted)
-    local obstacleType = math.random(1, 10)
     local obstacleType = math.random(1, 10)
     
     if obstacleType <= 4 then
@@ -1367,8 +1422,7 @@ local function updateActiveObjects(dt)
             
             -- CHECK FOR COLLISION WITH PLAYER (SUBWAY SURFERS STYLE: ONE-HIT CRASH)
             local distance = (hitbox.Position - root.Position).Magnitude
-            -- Increased collision range for varied shapes
-            local collisionRange = 5  -- Increased from 4 to 5 studs
+            local collisionRange = 3.5  -- Tight collision — must actually hit the obstacle
             
             if distance <= collisionRange and not isInvulnerable and isAlive then
                 print("💥 COLLISION DETECTED! Obstacle:", obstacle.Name, "Distance:", distance)
@@ -1398,33 +1452,8 @@ local function updateActiveObjects(dt)
                 end
                 
                 hitbox.Position = Vector3.new(newX, hitbox.Position.Y, hitbox.Position.Z)
-                
-            elseif obstacleType ~= "static" then
-                -- Handle person obstacles (original chase logic)
-                local detectionZone = obstacle:FindFirstChild("DetectionZone")
-                
-                if detectionZone then
-                    local distanceToPlayer = (hitbox.Position - root.Position).Magnitude
-                    local isChasing = obstacle:GetAttribute("IsChasing") or false
-                    
-                    if distanceToPlayer <= CONFIG.obstacleDetectionRange and not isChasing then
-                        obstacle:SetAttribute("IsChasing", true)
-                        print("📍 Obstacle", obstacle.Name, "started chasing player!")
-                    elseif isChasing then
-                        local direction = (root.Position - hitbox.Position).Unit
-                        local newPosition = hitbox.Position + direction * CONFIG.obstacleChaseSpeed * dt
-                        newPosition = Vector3.new(newPosition.X, hitbox.Position.Y, newPosition.Z)
-                        
-                        hitbox.Position = newPosition
-                        detectionZone.Position = newPosition
-                        
-                        if distanceToPlayer > CONFIG.obstacleDetectionRange * 2 then
-                            obstacle:SetAttribute("IsChasing", false)
-                            print("📍 Obstacle", obstacle.Name, "stopped chasing player")
-                        end
-                    end
-                end
             end
+            -- Person and static obstacles just stay in place (no chasing)
         end
     end
 
@@ -1525,14 +1554,9 @@ local function connectAttackInput()
     end)
 end
 
--- Timers as module-level variables to persist properly
-local obstacleTimer = 0
-local pistachioTimer = 0
-local hudUpdateTimer = 0
-local pinkRefreshTimer = 0
-local gameLoopConnection = nil  -- Track the connection
+-- (Timer variables declared near top of file with other state variables)
 
-local function startRunner()
+startRunner = function()
     print("🎮 FAF RUN — Credite, Cafele, Colocvii!")
     print("🥜 Revive Cost:", CONFIG.reviveCost, "pistachios")
     print("❤️ Max Revives Per Run:", CONFIG.maxRevivesPerRun)
@@ -1568,8 +1592,8 @@ local function startRunner()
         end
         
         distanceTraveled += currentSpeed * dt
-        -- Advance year progress with distance traveled
-        yearMeter = math.min(maxYearMeter, yearMeter + currentSpeed * dt * 0.6)
+        -- Advance year progress with distance traveled (slow fill)
+        yearMeter = math.min(maxYearMeter, yearMeter + currentSpeed * dt * 0.15)
         local newLevelIndex = getLevelForDistance(distanceTraveled)
         if newLevelIndex ~= currentLevelIndex then
             currentLevelIndex = newLevelIndex
@@ -1584,11 +1608,11 @@ local function startRunner()
             updateHud()
         end
 
-        -- Periodic repaint to ensure the whole path stays pink
+        -- Periodic refresh to keep platform styling consistent
         pinkRefreshTimer += dt
         if pinkRefreshTimer >= 3 then
             pinkRefreshTimer = 0
-            refreshPinkPath()
+            refreshPlatformStyle()
         end
 
         local currentLevel = levels[currentLevelIndex]
@@ -1645,7 +1669,7 @@ local function startRunner()
     end)
 end
 
-local function checkForCheckpointTouch()
+checkForCheckpointTouch = function()
     local root = getCharacterRoot()
     if not root then return end
     
@@ -1694,7 +1718,7 @@ end
 player.CharacterAdded:Connect(function(character)
     task.wait(0.5)  -- Wait a bit longer for character to fully load
     
-    -- Position character on the pink platform (at last checkpoint)
+    -- Position character on the platform (at last checkpoint)
     local humanoidRoot = character:WaitForChild("HumanoidRootPart", 5)
     if humanoidRoot then
         -- Set character position to be standing on the platform
