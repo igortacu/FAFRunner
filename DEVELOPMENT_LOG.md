@@ -112,6 +112,95 @@ Collect pistachios consecutively to build your Study Streak!
 
 ---
 
+## Speed Pad Feature
+
+The game now includes dynamic speed-modifying pads distributed along the running platform:
+
+### Speed Pad Types
+
+**Slow-Down Pads (Red)**
+- Color: Red with shiny (Neon) material
+- Effect: Reduces player speed to 60% for 3 seconds
+- Particles: Red/orange trail effect behind player
+- Distribution: Random placement every ~4.5 seconds with 60% spawn chance
+
+**Speed-Up Pads (Green)**
+- Color: Green with shiny (Neon) material  
+- Effect: Increases player speed to 150% for 3 seconds
+- Particles: Green trail effect behind player
+- Distribution: Random placement every ~4.5 seconds with 60% spawn chance
+
+### Features
+
+- **Collision Detection**: Pads are automatically collected when the player touches them
+- **Visual Feedback**: Pads shine with PointLight glow for visibility
+- **Particle Trails**: When under a speed effect, particles spawn behind the character in the pad's color
+- **Animation Sync**: Running animation playback speed adjusts to match movement speed
+- **Duration**: Each speed modifier effect lasts 3 seconds before returning to normal speed
+- **Distance Tracking**: Speed pads are despawned when far behind the player to optimize performance
+
+### Technical Details
+
+- Speed pads are spawned in `SpeedPadsFolder` in the `RunnerWorld`
+- Configuration available in `CONFIG.speedPads` with customizable multipliers, colors, and spawn chances
+- Speed modifier system uses `speedModifier` variable applied to effective speed calculation
+- Particle effects created in real-time using Neon material spheres with tweens
+
+---
+
+## 💎 Power-up System (Final Implementation)
+
+Enhanced power-up system now appears **every 4-5 seconds** with balanced spawn rates:
+
+### Power-up Types
+
+**Shield 🛡️ (Blue)**
+- Duration: 5 seconds
+- Effect: Blocks 1 collision with expanding sphere visual effect
+- Spawn Chance: 25% (3x increase from original)
+- HUD Display: "🛡️ SHIELD ACTIVE"
+
+**Double Points ⭐ (Gold)**
+- Duration: 8 seconds  
+- Effect: 2x score multiplier on all coins collected
+- Spawn Chance: 30% (3x increase from original)
+- HUD Display: Score text turns GOLD + "⚡ 2x ACTIVE!"
+
+**Magnet Boost 🧲 (Pink)**
+- Duration: 6 seconds
+- Effect: Auto-collects coins within 16 studs (8 base + 8 boost)
+- Spawn Chance: 35% (3x increase from original)
+- HUD Display: "🧲 MAGNET BOOST"
+
+### Spawn System Changes
+- **Frequency**: Every 3.5 seconds (was 15 seconds)
+- **Success Rate**: 80% per spawn window (was 35%)
+- **Result**: ~4-5 seconds between power-ups (vs ~42 seconds before)
+- **Positioning**: Ground level (GROUND_Y + 4) with natural scatter
+
+### Key Mechanics
+- **Shield**: Absorbs first collision, creates visual effect, continues game
+- **Multiplier**: Visible in real-time HUD with gold highlighting
+- **Magnet**: Pulls coins at distance, auto-collects when within 2 studs (Subway Surfers style)
+- **HUD Feedback**: All active effects clearly labeled with "ACTIVE" status
+
+---
+
+## 🛡️ Collision & Protection System
+
+### Shield Mechanics
+- **Activation**: Checked before crash detection
+- **Visual Effect**: Expanding blue neon sphere on impact
+- **One-time Use**: Absorbs single collision, then expires
+- **HUD Integration**: Immediately removed from display after blocking hit
+
+### Multiplier System
+- **Formula**: `totalMultiplier = streakMultiplier × (doublePointsActive ? 2 : 1)`
+- **Display**: Score shows actual multiplier in effect (e.g., "x4.0" with streak+2x)
+- **Scope**: Applies to all coins collected during active period
+
+---
+
 ## 🎨 Visual Features
 
 ### HUD Elements
@@ -172,6 +261,25 @@ workspace/
 6. **Streak breaks collection** - Wrapped in pcall, fixed streak UI
 7. **Health system confusing** - Changed to one-hit death (Subway Surfers style)
 8. **Game loop duplicates** - Track and disconnect old connections
+9. **CRITICAL (Feb 8): totalMultiplier undefined** - Added global calculation in updateHud()
+10. **CRITICAL (Feb 8): Animator access error** - Fixed double FindFirstChild() on animator retrieval
+11. **Power-up HUD display** - Fixed integration with HUD update system
+
+### Recent Fixes Applied (February 8, 2026):
+- ✅ Fixed undefined `totalMultiplier` variable causing HUD crash
+- ✅ Fixed Animator pathfinding error in animation speed sync
+- ✅ Verified all power-up systems (Shield, Double Points, Magnet Boost) are working
+- ✅ Confirmed all spawning systems active: obstacles, pistachios, speed pads, power-ups
+- ✅ All core game features remain 100% functional
+- ✅ **CRITICAL (Feb 8 - Rendering)**: Removed `AlwaysOnTop = true` from power-up and speed pad billboards so they render in 3D space with proper depth, appearing naturally among obstacles like pistachios (not as 2D overlays)
+- ✅ **CRITICAL (Feb 8 - Activation)**: Added 0.5s spawn delay before proximity activation to prevent items from being collected immediately after spawning
+- ✅ **POSITIONING FIX**: Power-ups and speed pads now spawn at ground level (GROUND_Y + 3.5-4) with horizontal scatter, matching pistachio behavior perfectly
+- ✅ **SPAWN FREQUENCY (Feb 8 - Final)**: Increased power-up spawn rate to every 3.5s with 80% success (was 15s + 35%)
+- ✅ **SPEED PAD ANIMATION**: Removed floating bobbing animation, pads now static on platform with only rotation
+- ✅ **MAGNET AUTO-COLLECT**: Coins now auto-collect when magnet pulls them within 2 studs (Subway Surfers style)
+- ✅ **HUD MULTIPLIER DISPLAY**: Score text turns gold and shows "2x ACTIVE!" when double points enabled
+- ✅ **POWER-UP HUD LABELS**: Displays "SHIELD ACTIVE", "2x POINTS!", "MAGNET BOOST" with clear visual feedback
+- ✅ **FUNCTION ORGANIZATION**: Reorganized code to define activation functions before creation functions (fixed undefined globals)
 
 ---
 
