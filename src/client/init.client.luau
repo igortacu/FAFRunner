@@ -39,6 +39,50 @@ local CONFIG = {
         Tronciu = "rbxassetid://YOUR_IMAGE_ID",
     },
     pistachioImageId = "rbxassetid://YOUR_PISTACHIO_IMAGE_ID",
+    -- Speed pad system
+    speedPads = {
+        slowdown = {
+            color = Color3.fromRGB(255, 50, 50),
+            speedMultiplier = 0.6,
+            particleColor = Color3.fromRGB(255, 100, 100),
+            trailDuration = 3,
+            width = 6,           -- FIXED: Increased from 5
+            height = 0.3,        -- FIXED: Reduced from 0.5 to sit flush
+            spawnChance = 0.15,
+            effectDuration = 3,  -- NEW: Explicit duration
+        },
+        speedup = {
+            color = Color3.fromRGB(50, 255, 50),
+            speedMultiplier = 1.5,
+            particleColor = Color3.fromRGB(100, 255, 100),
+            trailDuration = 3,
+            width = 6,           -- FIXED: Increased from 5
+            height = 0.3,        -- FIXED: Reduced from 0.5
+            spawnChance = 0.15,
+            effectDuration = 3,
+        },
+    },
+
+    powerUps = {
+        shield = {
+            color = Color3.fromRGB(100, 200, 255),
+            duration = 5,
+            icon = "🛡️",
+            spawnChance = 0.25,
+        },
+        doublePoints = {
+            color = Color3.fromRGB(255, 215, 0),
+            duration = 8,
+            icon = "⭐",
+            spawnChance = 0.3,
+        },
+        magnetBoost = {
+            color = Color3.fromRGB(255, 100, 255),
+            duration = 6,
+            icon = "🧲",
+            spawnChance = 0.35,
+        },
+    }
 }
 
 local levels = {
@@ -115,6 +159,21 @@ local platformsFolder = runnerWorld:FindFirstChild("Platforms") or Instance.new(
 platformsFolder.Name = "Platforms"
 platformsFolder.Parent = runnerWorld
 
+local speedPadsFolder = runnerWorld:FindFirstChild("SpeedPads") or Instance.new("Folder")
+speedPadsFolder.Name = "SpeedPads"
+speedPadsFolder.Parent = runnerWorld
+
+local powerUpsFolder = runnerWorld:FindFirstChild("PowerUps") or Instance.new("Folder")
+powerUpsFolder.Name = "PowerUps"
+powerUpsFolder.Parent = runnerWorld
+
+local activePowerUps = {}
+local hasShield = false
+local doublePointsActive = false
+local magnetBoostActive = false
+local powerUpTimer = 0
+local powerUpLabel  -- Add to HUD variables
+
 local distanceTraveled = 0
 local currentLevelIndex = 1
 local pistachioCount = 0
@@ -128,9 +187,16 @@ local revivesUsedThisRun = 0  -- Track revives used this run
 local isGamePaused = false  -- For revive screen
 local gameLoopConnection = nil  -- Track the Heartbeat connection
 
+-- Speed modifier system
+local speedModifier = 1.0  -- Multiplier for current speed (1.0 = normal, 1.5 = 50% faster, 0.6 = 40% slower)
+local speedModifierEndTime = 0  -- When the current speed modifier expires
+local activeSpeedPadType = nil  -- Track what type of pad is active for particle effects
+local currentTrailColor = nil  -- Color of current trail
+
 -- Timers as module-level variables to persist properly
 local obstacleTimer = 0
 local pistachioTimer = 0
+local speedPadTimer = 0
 local hudUpdateTimer = 0
 local pinkRefreshTimer = 0
 
@@ -140,6 +206,7 @@ local studyStreakLevel = 0
 local pistachiosCollectedInRun = 0
 local lastPistachioTime = 0
 local streakMultiplier = 1
+local totalMultiplier = 1  -- Calculate based on streak and double points
 
 -- Year progress system
 local yearProgress = 0
@@ -158,6 +225,7 @@ local healthLabel
 local streakLabel
 local yearLabel
 local checkpointLabel  -- New label for checkpoints
+local speedEffectLabel  -- Add speed effect label
 
 local function getCharacterRoot()
     local character = player.Character or player.CharacterAdded:Wait()
@@ -388,6 +456,17 @@ local function createHud()
     streakLabel = makeLabel()
     yearLabel = makeLabel()
     checkpointLabel = makeLabel()  -- Add checkpoint label
+    speedEffectLabel = makeLabel()  -- Add speed effect label
+    
+    speedEffectLabel.Text = "⚡ Speed: Normal"
+    speedEffectLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+
+    powerUpLabel = makeLabel()
+    powerUpLabel.Text = "💎 Power-ups: None"
+    powerUpLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+
+    -- Update frame size:
+    frame.Size = UDim2.fromOffset(320, 260)  -- Was 230
 end
 
 local function updateHud()
@@ -395,13 +474,25 @@ local function updateHud()
         return  -- HUD not created yet
     end
     
+    -- Calculate total multiplier from active power-ups
+    totalMultiplier = streakMultiplier * (doublePointsActive and 2 or 1)
+    
     local level = levels[currentLevelIndex]
     if not level then
         return
     end
 
     levelLabel.Text = string.format("📍 %s", level.name)
-    scoreLabel.Text = string.format("⭐ Score: %d (x%.1f)", math.floor(score), streakMultiplier)
+    
+    -- Enhance score display to highlight active multiplier
+    if doublePointsActive then
+        scoreLabel.Text = string.format("⭐ Score: %d (x%.1f) ⚡ 2x ACTIVE!", math.floor(score), totalMultiplier)
+        scoreLabel.TextColor3 = Color3.fromRGB(255, 215, 100)  -- Gold highlight when 2x active
+    else
+        scoreLabel.Text = string.format("⭐ Score: %d (x%.1f)", math.floor(score), totalMultiplier)
+        scoreLabel.TextColor3 = Color3.fromRGB(255, 255, 255)  -- Normal white
+    end
+    
     pistachioLabel.Text = string.format("🥜 Pistachios: %d | 💰 %d", pistachiosCollectedInRun, totalPistachios)
     
     -- Revives remaining (Subway Surfers style)
@@ -431,6 +522,41 @@ local function updateHud()
     -- Checkpoint display
     checkpointLabel.Text = string.format("✅ Checkpoint: #%d", lastCheckpointReached)
     checkpointLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+    
+    -- Speed effect display
+    if speedModifier ~= 1.0 then
+        if speedModifier > 1.0 then
+            speedEffectLabel.Text = string.format("⚡ SPEEDUP: %.1fx (%.1fs)", speedModifier, math.max(0, speedModifierEndTime - tick()))
+            speedEffectLabel.TextColor3 = CONFIG.speedPads.speedup.color
+        else
+            speedEffectLabel.Text = string.format("🐌 SLOWDOWN: %.1fx (%.1fs)", speedModifier, math.max(0, speedModifierEndTime - tick()))
+            speedEffectLabel.TextColor3 = CONFIG.speedPads.slowdown.color
+        end
+    else
+        speedEffectLabel.Text = "⚡ Speed: Normal"
+        speedEffectLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    end
+
+    -- Power-up display with active effects highlighted
+    local activePowerUpTexts = {}
+    if hasShield then
+        table.insert(activePowerUpTexts, "🛡️ SHIELD ACTIVE")
+    end
+    if doublePointsActive then
+        table.insert(activePowerUpTexts, "⭐ 2x POINTS!")
+    end
+    if magnetBoostActive then
+        table.insert(activePowerUpTexts, "🧲 MAGNET BOOST")
+    end
+
+    if #activePowerUpTexts > 0 then
+        powerUpLabel.Text = "💎 " .. table.concat(activePowerUpTexts, " | ")
+        powerUpLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+    else
+        powerUpLabel.Text = "💎 Power-ups: None"
+        powerUpLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+    end
+
 end
 
 local function setSkyBackground()
@@ -454,7 +580,7 @@ local function getLevelForDistance(distance)
     return selectedIndex
 end
 
--- Forward declarations (these functions reference each other, so we declare them first)
+-- Forward declarations
 local connectLethalTouch
 local connectModelLethal
 local crashPlayer
@@ -465,14 +591,17 @@ local checkForCheckpointTouch
 local startRunner
 local respawnPlayer
 
+-- ========== FIX: ADD MISSING OBSTACLE CREATION FUNCTIONS ==========
 local function createPersonObstacle(obstacleDef, position)
+    print("🛠️ Creating person obstacle:", obstacleDef.name)
+    
     local model = Instance.new("Model")
     model.Name = obstacleDef.name
     model.Parent = obstaclesFolder
 
     local hitbox = Instance.new("Part")
     hitbox.Name = "Hitbox"
-    hitbox.Size = Vector3.new(4, 6, 1)
+    hitbox.Size = Vector3.new(4, 6, 2)
     hitbox.Transparency = 0
     hitbox.Anchored = true
     hitbox.CanCollide = true
@@ -480,187 +609,501 @@ local function createPersonObstacle(obstacleDef, position)
     hitbox.Color = Color3.fromRGB(200, 80, 80)
     hitbox.Position = position + Vector3.new(0, 3, 0)
     hitbox.Parent = model
-    connectLethalTouch(hitbox)
-
-    -- Create detection zone (invisible sphere for chase AI only — NOT lethal)
-    local detectionZone = Instance.new("Part")
-    detectionZone.Name = "DetectionZone"
-    detectionZone.Shape = Enum.PartType.Ball
-    detectionZone.Size = Vector3.new(CONFIG.obstacleDetectionRange * 2, CONFIG.obstacleDetectionRange * 2, CONFIG.obstacleDetectionRange * 2)
-    detectionZone.Transparency = 1
-    detectionZone.Anchored = true
-    detectionZone.CanCollide = false
-    detectionZone.CanTouch = false  -- NOT lethal, only used for distance checks in updateActiveObjects
-    detectionZone.Position = position + Vector3.new(0, 3, 0)
-    detectionZone.Parent = model
-
-    local billboard = Instance.new("BillboardGui")
-    billboard.Name = "CharacterImage"
-    billboard.Size = UDim2.fromOffset(220, 320)
-    billboard.StudsOffset = Vector3.new(0, 3.2, 0)
-    billboard.AlwaysOnTop = true
-    billboard.Parent = hitbox
-
-    local image = Instance.new("ImageLabel")
-    image.Name = "Image"
-    image.BackgroundTransparency = 1
-    image.Size = UDim2.fromScale(1, 1)
-    image.Image = CONFIG.obstacleImageIds[obstacleDef.name] or ""
-    image.ScaleType = Enum.ScaleType.Fit
-    image.Parent = billboard
-
+    
+    -- Add a simple humanoid
     local humanoid = Instance.new("Humanoid")
-    humanoid.Health = obstacleDef.health
-    humanoid.MaxHealth = obstacleDef.health
+    humanoid.Health = obstacleDef.health or 3
+    humanoid.MaxHealth = obstacleDef.health or 3
     humanoid.Parent = model
-
+    
     model.PrimaryPart = hitbox
-    model:SetAttribute("Health", obstacleDef.health)
-    model:SetAttribute("Points", obstacleDef.points)
-    model:SetAttribute("Level", obstacleDef.level)
-    model:SetAttribute("Damage", 30) -- Person obstacles deal 30 damage
+    model:SetAttribute("Health", obstacleDef.health or 3)
+    model:SetAttribute("Points", obstacleDef.points or 50)
     model:SetAttribute("Type", "person")
-    model:SetAttribute("IsChasing", false)
-    model:SetAttribute("OriginalPosition", position)
-
-    connectModelLethal(model)
-
+    
+    -- Make it lethal
+    hitbox.Touched:Connect(function(hit)
+        local humanoid = hit.Parent and hit.Parent:FindFirstChildOfClass("Humanoid")
+        if humanoid and humanoid.Parent == player.Character and isAlive and not isInvulnerable then
+            if hasShield then
+                -- Shield absorbs hit
+                hasShield = false
+                print("🛡️ Shield absorbed hit!")
+                updateHud()
+                
+                -- Shield break effect
+                local shieldBreak = Instance.new("Part")
+                shieldBreak.Shape = Enum.PartType.Ball
+                shieldBreak.Size = Vector3.new(8, 8, 8)
+                shieldBreak.Position = hit.Parent.HumanoidRootPart.Position
+                shieldBreak.Anchored = true
+                shieldBreak.CanCollide = false
+                shieldBreak.Color = CONFIG.powerUps.shield.color
+                shieldBreak.Material = Enum.Material.Neon
+                shieldBreak.Transparency = 0.3
+                shieldBreak.Parent = workspace
+                
+                local tween = TweenService:Create(
+                    shieldBreak,
+                    TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                    {Size = Vector3.new(15, 15, 15), Transparency = 1}
+                )
+                tween:Play()
+                task.delay(0.5, function()
+                    shieldBreak:Destroy()
+                end)
+            else
+                crashPlayer()
+            end
+        end
+    end)
+    
     return model
 end
 
--- Make any part lethal to the player on touch
-connectLethalTouch = function(part)
-    part.Touched:Connect(function(hit)
+local function createStaticObstacle(obstacleDef, position)
+    print("🛠️ Creating static obstacle:", obstacleDef.name)
+    
+    local model = Instance.new("Model")
+    model.Name = obstacleDef.name
+    model.Parent = obstaclesFolder
+
+    local hitbox = Instance.new("Part")
+    hitbox.Name = "Hitbox"
+    
+    -- Different shapes for variety
+    if obstacleDef.name == "Pole" or obstacleDef.name == "Pillar" then
+        hitbox.Shape = Enum.PartType.Cylinder
+        hitbox.Size = Vector3.new(obstacleDef.height, obstacleDef.width, obstacleDef.width)
+        hitbox.Orientation = Vector3.new(0, 0, 90)
+    elseif obstacleDef.name == "Spikes" then
+        hitbox.Shape = Enum.PartType.Wedge
+        hitbox.Size = Vector3.new(obstacleDef.width, obstacleDef.height, 3)
+    else
+        hitbox.Size = Vector3.new(obstacleDef.width, obstacleDef.height, 3)
+    end
+    
+    hitbox.Color = obstacleDef.color
+    hitbox.Material = Enum.Material.SmoothPlastic
+    hitbox.Anchored = true
+    hitbox.CanCollide = true
+    hitbox.Position = position + Vector3.new(0, obstacleDef.height/2, 0)
+    hitbox.Parent = model
+    
+    -- Make it lethal
+    hitbox.Touched:Connect(function(hit)
+        local humanoid = hit.Parent and hit.Parent:FindFirstChildOfClass("Humanoid")
+        if humanoid and humanoid.Parent == player.Character and isAlive and not isInvulnerable then
+            if hasShield then
+                -- Shield absorbs hit
+                hasShield = false
+                print("🛡️ Shield absorbed hit!")
+                updateHud()
+                
+                -- Shield break effect
+                local shieldBreak = Instance.new("Part")
+                shieldBreak.Shape = Enum.PartType.Ball
+                shieldBreak.Size = Vector3.new(8, 8, 8)
+                shieldBreak.Position = hit.Parent.HumanoidRootPart.Position
+                shieldBreak.Anchored = true
+                shieldBreak.CanCollide = false
+                shieldBreak.Color = CONFIG.powerUps.shield.color
+                shieldBreak.Material = Enum.Material.Neon
+                shieldBreak.Transparency = 0.3
+                shieldBreak.Parent = workspace
+                
+                local tween = TweenService:Create(
+                    shieldBreak,
+                    TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                    {Size = Vector3.new(15, 15, 15), Transparency = 1}
+                )
+                tween:Play()
+                task.delay(0.5, function()
+                    shieldBreak:Destroy()
+                end)
+            else
+                crashPlayer()
+            end
+        end
+    end)
+    
+    model.PrimaryPart = hitbox
+    model:SetAttribute("Type", "static")
+    
+    return model
+end
+
+local function createMovingObstacle(obstacleDef, position)
+    print("🛠️ Creating moving obstacle:", obstacleDef.name)
+    
+    local model = Instance.new("Model")
+    model.Name = obstacleDef.name
+    model.Parent = obstaclesFolder
+
+    local hitbox = Instance.new("Part")
+    hitbox.Name = "Hitbox"
+    hitbox.Size = Vector3.new(obstacleDef.width, obstacleDef.height, 3)
+    hitbox.Color = obstacleDef.color
+    hitbox.Material = Enum.Material.Metal
+    hitbox.Anchored = true
+    hitbox.CanCollide = true
+    hitbox.Position = position + Vector3.new(0, obstacleDef.height/2, 0)
+    hitbox.Parent = model
+    
+    -- Make it lethal
+    hitbox.Touched:Connect(function(hit)
         local humanoid = hit.Parent and hit.Parent:FindFirstChildOfClass("Humanoid")
         if humanoid and humanoid.Parent == player.Character and isAlive and not isInvulnerable then
             crashPlayer()
         end
     end)
-end
-
--- Make every BasePart inside a model lethal + solid
-connectModelLethal = function(model)
-    for _, descendant in ipairs(model:GetDescendants()) do
-        if descendant:IsA("BasePart") and descendant.Name ~= "DetectionZone" then
-            descendant.CanCollide = true
-            connectLethalTouch(descendant)
-        end
-    end
-end
-
-local function createStaticObstacle(obstacleDef, position)
-    local model = Instance.new("Model")
-    model.Name = obstacleDef.name
-    model.Parent = obstaclesFolder
-
-    local hitbox = Instance.new("Part")
-    hitbox.Name = "Hitbox"
     
-    -- Randomize obstacle shapes for variety
-    local shapeChoice = math.random(1, 5)
-    if shapeChoice == 1 then
-        hitbox.Shape = Enum.PartType.Cylinder
-        hitbox.Size = Vector3.new(obstacleDef.height, obstacleDef.width, obstacleDef.width)
-        hitbox.Orientation = Vector3.new(0, 0, 90)  -- Rotate cylinder
-        hitbox.Color = obstacleDef.color
-            hitbox.Material = Enum.Material.Metal
-    elseif shapeChoice == 2 then
-        hitbox.Shape = Enum.PartType.Ball
-        hitbox.Size = Vector3.new(obstacleDef.width * 1.2, obstacleDef.width * 1.2, obstacleDef.width * 1.2)
-        hitbox.Color = obstacleDef.color
-            hitbox.Material = Enum.Material.Neon
-    elseif shapeChoice == 3 then
-        -- Wedge shape
-        hitbox:Destroy()  -- Don't need the Part anymore
-        local wedge = Instance.new("WedgePart")
-        wedge.Name = "Hitbox"
-        wedge.Size = Vector3.new(obstacleDef.width, obstacleDef.height, 3)
-        wedge.Color = obstacleDef.color
-            wedge.Material = Enum.Material.Concrete
-        wedge.Anchored = true
-        wedge.CanCollide = false
-        wedge.Position = position + Vector3.new(0, obstacleDef.height/2, 0)
-        wedge.Parent = model
-        hitbox = wedge
-    elseif shapeChoice == 4 then
-        -- Tall thin pole
-        hitbox.Size = Vector3.new(1.5, obstacleDef.height * 1.5, 1.5)
-        hitbox.Color = obstacleDef.color
-            hitbox.Material = Enum.Material.Metal
-    else
-        -- Regular block
-        hitbox.Size = Vector3.new(obstacleDef.width, obstacleDef.height, 2)
-        hitbox.Color = obstacleDef.color
-            hitbox.Material = Enum.Material.SmoothPlastic
-    end
-    
-    -- Set common properties (for non-wedge parts)
-    if hitbox.ClassName == "Part" then
-        hitbox.Anchored = true
-        hitbox.CanCollide = true  -- solid
-        hitbox.Position = position + Vector3.new(0, obstacleDef.height/2, 0)
-        hitbox.Parent = model
-        connectLethalTouch(hitbox)
-    elseif hitbox.ClassName == "WedgePart" then
-        connectLethalTouch(hitbox)
-        hitbox.CanCollide = true
-    end
-
-    model.PrimaryPart = hitbox
-    model:SetAttribute("Type", "static")
-    model:SetAttribute("Damage", 25)
-
-    connectModelLethal(model)
-
-    return model
-end
-
-local function createMovingObstacle(obstacleDef, position)
-    local model = Instance.new("Model")
-    model.Name = obstacleDef.name
-    model.Parent = obstaclesFolder
-
-    local hitbox = Instance.new("Part")
-    hitbox.Name = "Hitbox"
-    
-    -- Different shapes for moving obstacles
-    local shapeChoice = math.random(1, 4)
-    if shapeChoice == 1 then
-        hitbox.Shape = Enum.PartType.Ball
-            hitbox.Size = Vector3.new(obstacleDef.width * 1.2, obstacleDef.width * 1.2, obstacleDef.width * 1.2)
-            hitbox.Material = Enum.Material.Neon  -- Glowing balls
-    elseif shapeChoice == 2 then
-        hitbox.Shape = Enum.PartType.Cylinder
-        hitbox.Size = Vector3.new(obstacleDef.height, obstacleDef.width, obstacleDef.width)
-        hitbox.Orientation = Vector3.new(0, 0, 90)
-            hitbox.Material = Enum.Material.Metal
-    elseif shapeChoice == 3 then
-        -- Rotating cube
-        hitbox.Size = Vector3.new(obstacleDef.width, obstacleDef.width, obstacleDef.width)
-        hitbox.Orientation = Vector3.new(45, 45, 0)
-            hitbox.Material = Enum.Material.Concrete
-    else
-        hitbox.Size = Vector3.new(obstacleDef.width, obstacleDef.height, 2)
-            hitbox.Material = Enum.Material.SmoothPlastic
-    end
-    
-    hitbox.Color = obstacleDef.color
-    hitbox.Anchored = true
-    hitbox.CanCollide = true
-    hitbox.Position = position + Vector3.new(0, obstacleDef.height/2, 0)
-    hitbox.Parent = model
-    connectLethalTouch(hitbox)
-
     model.PrimaryPart = hitbox
     model:SetAttribute("Type", "moving")
-    model:SetAttribute("Damage", 35)
     model:SetAttribute("Speed", obstacleDef.speed)
     model:SetAttribute("Direction", math.random() > 0.5 and 1 or -1)
     model:SetAttribute("OriginalX", position.X)
-
-    connectModelLethal(model)
-
+    
     return model
+end
+
+-- ========== ACTIVATION FUNCTIONS (Must be before create* functions) ==========
+-- Reusable activation for power-ups (so proximity + touch both work)
+local function activatePowerUpInstance(powerUp)
+    if not powerUp or not powerUp.Parent then return end
+    if powerUp:GetAttribute("Collected") then return end
+
+    powerUp:SetAttribute("Collected", true)
+    local powerUpType = powerUp:GetAttribute("Type") or "shield"
+    local powerUpConfig = CONFIG.powerUps[powerUpType]
+    print("💎 Activated power-up:", powerUpType)
+
+    if powerUpType == "shield" then
+        hasShield = true
+        print("🛡️ Shield activated for", powerUpConfig.duration, "seconds")
+        task.delay(powerUpConfig.duration, function()
+            hasShield = false
+            print("🛡️ Shield expired")
+            updateHud()
+        end)
+    elseif powerUpType == "doublePoints" then
+        doublePointsActive = true
+        print("⭐ Double Points activated for", powerUpConfig.duration, "seconds")
+        task.delay(powerUpConfig.duration, function()
+            doublePointsActive = false
+            print("⭐ Double Points expired")
+            updateHud()
+        end)
+    elseif powerUpType == "magnetBoost" then
+        magnetBoostActive = true
+        print("🧲 Magnet Boost activated for", powerUpConfig.duration, "seconds")
+        task.delay(powerUpConfig.duration, function()
+            magnetBoostActive = false
+            print("🧲 Magnet Boost expired")
+            updateHud()
+        end)
+    end
+
+    -- Collection animation + cleanup
+    local tween = TweenService:Create(
+        powerUp,
+        TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.In),
+        {Size = Vector3.new(0,0,0), Transparency = 1}
+    )
+    tween:Play()
+    tween.Completed:Connect(function()
+        if powerUp and powerUp.Parent then
+            powerUp:Destroy()
+        end
+    end)
+
+    updateHud()  -- Update immediately so player sees power-up is active
+end
+
+-- Reusable activation for speed pads (so proximity + touch both work)
+local function activateSpeedPad(pad)
+    if not pad or not pad.Parent then return end
+    if pad:GetAttribute("Collected") then return end
+
+    pad:SetAttribute("Collected", true)
+    local padType = pad:GetAttribute("Type") or "speedup"
+    local padConfig = CONFIG.speedPads[padType]
+    if not padConfig then return end
+
+    speedModifier = padConfig.speedMultiplier
+    speedModifierEndTime = tick() + (padConfig.effectDuration or 3)
+    activeSpeedPadType = padType
+    currentTrailColor = padConfig.particleColor
+
+    -- Collection animation
+    local tween = TweenService:Create(
+        pad,
+        TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.In),
+        {Size = Vector3.new(0,0,0), Transparency = 1}
+    )
+    tween:Play()
+    tween.Completed:Connect(function()
+        if pad and pad.Parent then
+            pad:Destroy()
+        end
+    end)
+
+    print("✅ Speed modifier applied: " .. tostring(padConfig.speedMultiplier) .. "x for " .. tostring(padConfig.effectDuration) .. " seconds")
+    updateHud()
+end
+
+-- ========== FIX: ENHANCED SPEED PAD SYSTEM ==========
+local function createSpeedPad(position, padType)
+    padType = padType or (math.random() > 0.5 and "speedup" or "slowdown")
+    local padConfig = CONFIG.speedPads[padType]
+    
+    print("⚡ Creating", padType, "pad at", position)
+    
+    -- FIXED: Main pad part - sits FLUSH on platform
+    local pad = Instance.new("Part")
+    pad.Name = "SpeedPad_" .. padType
+    pad.Size = Vector3.new(padConfig.width, padConfig.height, padConfig.width)
+    pad.Color = padConfig.color
+    pad.Anchored = true
+    pad.CanCollide = false  -- FIXED: Changed from true to false
+    pad.Material = Enum.Material.Neon
+    pad.TopSurface = Enum.SurfaceType.Smooth
+    pad.BottomSurface = Enum.SurfaceType.Smooth
+    pad.Transparency = 0.2  -- FIXED: Was not set, now 0.2 for visibility
+    pad.Position = position
+    pad.Parent = speedPadsFolder
+    
+    pad:SetAttribute("Type", padType)
+    pad:SetAttribute("Collected", false)
+    pad:SetAttribute("SpawnTime", tick())  -- Track spawn time to delay proximity activation
+    
+    -- FIXED: Much brighter glow
+    local light = Instance.new("PointLight")
+    light.Brightness = 5  -- FIXED: Increased from 2
+    light.Color = padConfig.color
+    light.Range = 30      -- FIXED: Increased from 25
+    light.Parent = pad
+    
+    -- Icon billboard positioned in 3D space (not overlay)
+    local billboard = Instance.new("BillboardGui")
+    billboard.Size = UDim2.fromOffset(120, 120)
+    billboard.StudsOffset = Vector3.new(0, 3, 0)  -- Adjusted for ground-level positioning
+    billboard.Adornee = pad
+    billboard.AlwaysOnTop = false  -- Respect 3D depth - appears behind obstacles
+    billboard.Parent = pad
+    
+    local icon = Instance.new("TextLabel")
+    icon.Size = UDim2.fromScale(1, 1)
+    icon.BackgroundTransparency = 1
+    icon.Text = padType == "speedup" and "⚡" or "🐌"
+    icon.TextColor3 = Color3.new(1, 1, 1)
+    icon.TextSize = 50  -- FIXED: Increased from 40
+    icon.Font = Enum.Font.GothamBold
+    icon.TextStrokeTransparency = 0      -- NEW: Added outline
+    icon.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    icon.Parent = billboard
+    
+    -- STATIC on platform - no floating animation
+    -- Speed pads stay fixed at spawn position on the running platform
+    task.spawn(function()
+        while pad and pad.Parent and not pad:GetAttribute("Collected") do
+            if pad and pad.Parent then
+                pad.CFrame = pad.CFrame * CFrame.Angles(0, math.rad(1.5), 0)
+            end
+            task.wait(0.016)
+        end
+    end)
+    
+    -- Touch detection for collection (delegates to reusable activation function)
+    pad.Touched:Connect(function(hit)
+        if hit and hit.Parent then
+            local humanoid = hit.Parent:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid.Parent == player.Character and not pad:GetAttribute("Collected") and isAlive then
+                local success, err = pcall(function()
+                    activateSpeedPad(pad)
+                end)
+                if not success then
+                    warn("⚠️ Error activating speed pad:", err)
+                end
+            end
+        end
+    end)
+    
+    return pad
+end
+
+-- Create particle trail effect when player is under speed pad effect
+local function createParticleTrail()
+    if not activeSpeedPadType or not currentTrailColor then
+        return
+    end
+    
+    local root = getCharacterRoot()
+    if not root then return end
+    
+    local padConfig = CONFIG.speedPads[activeSpeedPadType]
+    if not padConfig then return end
+    
+    -- Create multiple particles for better trail effect
+    for i = 1, 3 do
+        local particle = Instance.new("Part")
+        particle.Name = "SpeedTrail"
+        particle.Shape = Enum.PartType.Ball
+        particle.Size = Vector3.new(0.8, 0.8, 0.8)
+        particle.Color = currentTrailColor
+        particle.Anchored = true
+        particle.CanCollide = false
+        particle.Material = Enum.Material.Neon
+        particle.Position = root.Position - Vector3.new(0, 2, 0) + Vector3.new(
+            (math.random() - 0.5) * 3,
+            math.random() * 1.5,
+            (math.random() - 0.5) * 2 - 2
+        )
+        particle.Parent = workspace
+        
+        -- Animate particle - scale down and fade out
+        local tween = TweenService:Create(
+            particle,
+            TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+            {
+                Size = Vector3.new(0.1, 0.1, 0.1),
+                Transparency = 1,
+                Position = particle.Position + Vector3.new(0, 0, -4)
+            }
+        )
+        tween:Play()
+        
+        -- Destroy after animation
+        tween.Completed:Connect(function()
+            particle:Destroy()
+        end)
+    end
+end
+
+-- Power-up creation function
+local function createPowerUp(position, powerUpType)
+    powerUpType = powerUpType or "shield"
+    local powerUpConfig = CONFIG.powerUps[powerUpType]
+    
+    print("💎 Creating", powerUpType, "power-up at", position)
+    
+    local powerUp = Instance.new("Part")
+    powerUp.Name = "PowerUp_" .. powerUpType
+    powerUp.Shape = Enum.PartType.Ball
+    powerUp.Size = Vector3.new(3, 3, 3)
+    powerUp.Color = powerUpConfig.color
+    powerUp.Anchored = true
+    powerUp.CanCollide = false
+    powerUp.Material = Enum.Material.Neon
+    powerUp.Position = position
+    powerUp.Parent = powerUpsFolder
+    
+    powerUp:SetAttribute("Type", powerUpType)
+    powerUp:SetAttribute("Collected", false)
+    powerUp:SetAttribute("SpawnTime", tick())  -- Track when created to delay proximity activation
+    
+    -- Bright glow
+    local light = Instance.new("PointLight")
+    light.Brightness = 4
+    light.Color = powerUpConfig.color
+    light.Range = 25
+    light.Parent = powerUp
+    
+    -- Floating icon (rendered in 3D space, not as overlay)
+    local billboard = Instance.new("BillboardGui")
+    billboard.Size = UDim2.fromOffset(100, 100)
+    billboard.StudsOffset = Vector3.new(0, 2, 0)
+    billboard.Adornee = powerUp
+    billboard.AlwaysOnTop = false  -- Respect depth so it appears behind obstacles like pistachios
+    billboard.Parent = powerUp
+    
+    local icon = Instance.new("TextLabel")
+    icon.Size = UDim2.fromScale(1, 1)
+    icon.BackgroundTransparency = 1
+    icon.Text = powerUpConfig.icon
+    icon.TextColor3 = Color3.new(1, 1, 1)
+    icon.TextSize = 45
+    icon.Font = Enum.Font.GothamBold
+    icon.TextStrokeTransparency = 0
+    icon.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    icon.Parent = billboard
+    
+    -- Smooth floating animation (Subway Surfers style: gentle bob + rotation)
+    task.spawn(function()
+        local bobAmount = 0.6
+        local bobSpeed = 1.8
+        local baseY = position.Y
+        local time = 0
+        
+        while powerUp and powerUp.Parent and not powerUp:GetAttribute("Collected") do
+            time += task.wait(0.016)  -- ~60 FPS for smooth motion
+            if powerUp and powerUp.Parent then
+                -- Smooth floating up and down
+                local newY = baseY + math.sin(time * bobSpeed * math.pi) * bobAmount
+                powerUp.Position = Vector3.new(position.X, newY, position.Z)
+            end
+        end
+    end)
+    
+    -- Gentle continuous rotation
+    task.spawn(function()
+        while powerUp and powerUp.Parent and not powerUp:GetAttribute("Collected") do
+            if powerUp and powerUp.Parent then
+                powerUp.CFrame = powerUp.CFrame * CFrame.Angles(
+                    math.rad(0.8),  -- Slow roll on X
+                    math.rad(2),     -- Spin on Y
+                    math.rad(0.3)    -- Tilt on Z
+                )
+            end
+            task.wait(0.016)  -- ~60 FPS
+        end
+    end)
+    
+    -- Collection (delegates to reusable activation so proximity + touch work)
+    powerUp.Touched:Connect(function(hit)
+        if hit and hit.Parent then
+            local humanoid = hit.Parent:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid.Parent == player.Character and not powerUp:GetAttribute("Collected") and isAlive then
+                local success, err = pcall(function()
+                    activatePowerUpInstance(powerUp)
+                end)
+                if not success then
+                    warn("⚠️ Error activating power-up:", err)
+                end
+            end
+        end
+    end)
+    
+    return powerUp
+end
+
+-- Power-up spawning function (modeled after pistachio spawning)
+local function spawnPowerUp()
+    local root = getCharacterRoot()
+    if not root then return end
+    
+    local powerUpTypes = {"shield", "doublePoints", "magnetBoost"}
+    local powerUpType = powerUpTypes[math.random(1, #powerUpTypes)]
+    
+    local laneChoice = math.random(1, #CONFIG.lanes)
+    local laneX = CONFIG.lanes[laneChoice]
+    
+    -- Add horizontal variation like pistachios do
+    local horizontalVariation = (math.random() - 0.5) * 3
+    laneX = laneX + horizontalVariation
+    
+    -- Spawn further ahead with more natural spacing
+    local zOffset = -(CONFIG.spawnDistance + math.random(20, 40))
+    
+    -- Position at ground level like pistachios (GROUND_Y + 4)
+    local spawnPosition = Vector3.new(
+        laneX,
+        GROUND_Y + 4,  -- Match pistachio height
+        root.Position.Z + zOffset
+    )
+    
+    print("💎 Spawning", powerUpType, "power-up at:", spawnPosition)
+    createPowerUp(spawnPosition, powerUpType)
 end
 
 -- SUBWAY SURFERS STYLE: One-hit death with revive option
@@ -986,9 +1429,16 @@ respawnPlayer = function()
     isInvulnerable = false
     revivesUsedThisRun = 0  -- Reset revives for new run
     
+    -- Reset speed modifier system
+    speedModifier = 1.0
+    speedModifierEndTime = 0
+    activeSpeedPadType = nil
+    currentTrailColor = nil
+    
     -- Reset timers to ensure spawning continues
     obstacleTimer = 0
     pistachioTimer = 0
+    speedPadTimer = 0
     
     -- Reset streak system
     studyStreak = 0
@@ -999,6 +1449,20 @@ respawnPlayer = function()
     -- Reset year progress
     yearProgress = 0
     yearMeter = 0
+
+    -- Reset power-ups
+    hasShield = false
+    doublePointsActive = false
+    magnetBoostActive = false
+    activePowerUps = {}
+
+    -- Clear all power-ups
+    for _, powerUp in pairs(powerUpsFolder:GetChildren()) do
+        powerUp:Destroy()
+    end
+
+    -- Reset power-up timer
+    powerUpTimer = 0
     
     -- Clear all obstacles
     for _, obstacle in pairs(obstaclesFolder:GetChildren()) do
@@ -1008,6 +1472,11 @@ respawnPlayer = function()
     -- Clear all pistachios
     for _, pistachio in pairs(pistachiosFolder:GetChildren()) do
         pistachio:Destroy()
+    end
+    
+    -- Clear all speed pads
+    for _, speedPad in pairs(speedPadsFolder:GetChildren()) do
+        speedPad:Destroy()
     end
     
     -- Clear and reinitialize platforms (checkpoints persist)
@@ -1237,7 +1706,8 @@ collectPistachio = function(pistachio, rarity)
     end
     
     -- Add score with streak multiplier
-    local pointsEarned = pistachioData.points * streakMultiplier
+    local totalMultiplier = streakMultiplier * (doublePointsActive and 2 or 1)
+    local pointsEarned = pistachioData.points * totalMultiplier
     score += pointsEarned
     print("Points earned:", pointsEarned, "(", pistachioData.points, "x", streakMultiplier, ")")
     
@@ -1400,6 +1870,37 @@ local function spawnPistachio()
     end
 end
 
+local function spawnSpeedPad()
+    local root = getCharacterRoot()
+    if not root then 
+        print("⚠️ No root found, skipping speed pad spawn")
+        return 
+    end
+    
+    local padType = math.random() > 0.5 and "speedup" or "slowdown"
+    local padConfig = CONFIG.speedPads[padType]
+    
+    local laneChoice = math.random(1, #CONFIG.lanes)
+    local laneX = CONFIG.lanes[laneChoice]
+    
+    -- Add horizontal variation like pistachios
+    local horizontalVariation = (math.random() - 0.5) * 2.5
+    laneX = laneX + horizontalVariation
+    
+    -- Spawn with natural spacing
+    local zOffset = -(CONFIG.spawnDistance + math.random(15, 35))
+    
+    -- Position on platform surface (not floating high)
+    local spawnPosition = Vector3.new(
+        laneX,
+        GROUND_Y + 0.8,  -- Sit on platform surface (platform top ~50.5, pad height 0.3 means center at 50.65)
+        root.Position.Z + zOffset
+    )
+    
+    print("⚡ Spawning", padType, "speed pad at:", spawnPosition)
+    createSpeedPad(spawnPosition, padType)
+end
+
 local function updateActiveObjects(dt)
     local root = getCharacterRoot()
     
@@ -1426,7 +1927,38 @@ local function updateActiveObjects(dt)
             
             if distance <= collisionRange and not isInvulnerable and isAlive then
                 print("💥 COLLISION DETECTED! Obstacle:", obstacle.Name, "Distance:", distance)
-                crashPlayer()  -- One-hit death like Subway Surfers!
+                
+                -- CHECK FOR SHIELD FIRST
+                if hasShield then
+                    hasShield = false
+                    print("🛡️ Shield absorbed hit!")
+                    updateHud()
+                    
+                    -- Shield break effect
+                    local shieldBreak = Instance.new("Part")
+                    shieldBreak.Shape = Enum.PartType.Ball
+                    shieldBreak.Size = Vector3.new(8, 8, 8)
+                    shieldBreak.Position = root.Position
+                    shieldBreak.Anchored = true
+                    shieldBreak.CanCollide = false
+                    shieldBreak.Color = CONFIG.powerUps.shield.color
+                    shieldBreak.Material = Enum.Material.Neon
+                    shieldBreak.Transparency = 0.3
+                    shieldBreak.Parent = workspace
+                    
+                    local tween = TweenService:Create(
+                        shieldBreak,
+                        TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                        {Size = Vector3.new(15, 15, 15), Transparency = 1}
+                    )
+                    tween:Play()
+                    task.delay(0.5, function()
+                        shieldBreak:Destroy()
+                    end)
+                else
+                    -- No shield, crash
+                    crashPlayer()
+                end
                 
                 -- Destroy obstacle on hit
                 obstacle:Destroy()
@@ -1481,13 +2013,88 @@ local function updateActiveObjects(dt)
                     continue
                 end
                 
-                -- Magnetic attraction when close (increased range)
-                if distance <= CONFIG.pistachioMagnetRange + 4 then
+                -- Magnetic attraction (extended range when magnet boost is active)
+                local baseMagnetRange = CONFIG.pistachioMagnetRange
+                local activeMagnetRange = baseMagnetRange + (magnetBoostActive and 8 or 0)
+                
+                if distance <= activeMagnetRange then
                     local direction = (root.Position - pistachio.Position).Unit
-                    local magnetRange = CONFIG.pistachioMagnetRange + 4
-                    local magnetForce = (magnetRange - distance) / magnetRange
-                    local pullSpeed = 25 * magnetForce  -- Increased pull speed
+                    local magnetForce = (activeMagnetRange - distance) / activeMagnetRange
+                    local pullSpeed = 45 * magnetForce
                     pistachio.Position = pistachio.Position + direction * pullSpeed * dt
+                    
+                    if distance <= 2 then
+                        local rarity = pistachio:GetAttribute("Rarity") or "common"
+                        local success, err = pcall(function()
+                            collectPistachio(pistachio, rarity)
+                        end)
+                        if not success then
+                            pistachio:Destroy()
+                        end
+                        continue
+                    end
+                    
+                    if magnetBoostActive and distance < 5 then
+                        print("🧲 Magnet boost active! Pulling pistachio at distance:", distance)
+                    end
+                end
+            end
+        end
+    end
+    
+    -- Update speed pads: proximity collection + despawn old ones
+    for _, speedPad in ipairs(speedPadsFolder:GetChildren()) do
+        if not speedPad:IsA("BasePart") then continue end
+
+        -- Despawn pads far behind the player
+        if speedPad.Position.Z > root.Position.Z + CONFIG.despawnDistance then
+            speedPad:Destroy()
+            continue
+        end
+
+        -- Proximity collection (so pads are collectible even if Touch fails)
+        if not speedPad:GetAttribute("Collected") then
+            local spawnTime = speedPad:GetAttribute("SpawnTime") or tick()
+            local ageInSeconds = tick() - spawnTime
+            
+            -- Only activate by proximity after 0.5s to let it render
+            if ageInSeconds > 0.5 then
+                local dist = (speedPad.Position - root.Position).Magnitude
+                if dist <= 5 and isAlive then
+                    local success, err = pcall(function()
+                        activateSpeedPad(speedPad)
+                    end)
+                    if not success then
+                        warn("⚠️ Error activating speed pad (proximity):", err)
+                    end
+                end
+            end
+        end
+    end
+
+    -- Update power-ups: proximity collection + despawn
+    for _, powerUp in ipairs(powerUpsFolder:GetChildren()) do
+        if not powerUp:IsA("BasePart") then continue end
+
+        if powerUp.Position.Z > root.Position.Z + CONFIG.despawnDistance then
+            powerUp:Destroy()
+            continue
+        end
+
+        if not powerUp:GetAttribute("Collected") then
+            local spawnTime = powerUp:GetAttribute("SpawnTime") or tick()
+            local ageInSeconds = tick() - spawnTime
+            
+            -- Only activate by proximity after 0.5s to let it render
+            if ageInSeconds > 0.5 then
+                local dist = (powerUp.Position - root.Position).Magnitude
+                if dist <= 6 and isAlive then
+                    local success, err = pcall(function()
+                        activatePowerUpInstance(powerUp)
+                    end)
+                    if not success then
+                        warn("⚠️ Error activating power-up (proximity):", err)
+                    end
                 end
             end
         end
@@ -1530,7 +2137,9 @@ local function attackNearestObstacle()
         end
 
         if health <= 0 then
-            score += closest:GetAttribute("Points") or 50
+            local basePoints = closest:GetAttribute("Points") or 50
+            local totalMultiplier = streakMultiplier * (doublePointsActive and 2 or 1)
+            score += basePoints * totalMultiplier
             closest:Destroy()
             updateHud()
         end
@@ -1560,9 +2169,12 @@ startRunner = function()
     print("🎮 FAF RUN — Credite, Cafele, Colocvii!")
     print("🥜 Revive Cost:", CONFIG.reviveCost, "pistachios")
     print("❤️ Max Revives Per Run:", CONFIG.maxRevivesPerRun)
+    print("⚡ Speed Pad System: ACTIVE")
+    print("   - Speed Up Pads: Green (1.5x speed)")
+    print("   - Slow Down Pads: Red (0.6x speed)")
     
     -- Clean any leftovers so first spawn shows new visuals immediately
-    for _, folder in ipairs({obstaclesFolder, pistachiosFolder, platformsFolder}) do
+    for _, folder in ipairs({obstaclesFolder, pistachiosFolder, platformsFolder, speedPadsFolder}) do
         for _, child in ipairs(folder:GetChildren()) do
             child:Destroy()
         end
@@ -1576,6 +2188,7 @@ startRunner = function()
     -- Reset timers
     obstacleTimer = 0
     pistachioTimer = 0
+    speedPadTimer = 0
     hudUpdateTimer = 0
 
     connectAttackInput()
@@ -1591,9 +2204,21 @@ startRunner = function()
             return
         end
         
-        distanceTraveled += currentSpeed * dt
+        -- Update speed modifier expiration
+        if tick() >= speedModifierEndTime then
+            if speedModifier ~= 1.0 then
+                print("⏱️ Speed modifier expired, returning to normal speed")
+            end
+            speedModifier = 1.0
+            activeSpeedPadType = nil
+            currentTrailColor = nil
+        end
+        
+        -- Apply speed modifier to current speed
+        local effectiveSpeed = CONFIG.runSpeed * speedModifier
+        distanceTraveled += effectiveSpeed * dt
         -- Advance year progress with distance traveled (slow fill)
-        yearMeter = math.min(maxYearMeter, yearMeter + currentSpeed * dt * 0.15)
+        yearMeter = math.min(maxYearMeter, yearMeter + effectiveSpeed * dt * 0.15)
         local newLevelIndex = getLevelForDistance(distanceTraveled)
         if newLevelIndex ~= currentLevelIndex then
             currentLevelIndex = newLevelIndex
@@ -1625,6 +2250,7 @@ startRunner = function()
         pistachioTimer += dt
         
         -- Debug: Log timer status every 5 seconds
+            powerUpTimer += dt
         if math.floor(pistachioTimer * 10) % 50 == 0 and pistachioTimer > 0.1 then
             print("🔍 Timer check - Pistachio:", string.format("%.2f", pistachioTimer), "/", currentLevel.pistachioInterval, "Obstacle:", string.format("%.2f", obstacleTimer))
         end
@@ -1653,6 +2279,26 @@ startRunner = function()
             spawnPistachio()
         end
         
+        -- SPEED PAD SPAWNING - distribute pads along the path
+        speedPadTimer += dt
+        local speedPadInterval = 4.5  -- Speed pads spawn every 4.5 seconds
+        if speedPadTimer >= speedPadInterval then
+            speedPadTimer = 0
+            -- Random chance to spawn a speed pad (prevents overcrowding)
+            if math.random() < 0.6 then  -- 60% chance each spawn window
+                spawnSpeedPad()
+            end
+        end
+
+        -- POWER-UP SPAWNING - special items that provide temporary boosts (now more frequent!)
+        local powerUpInterval = 3.5
+        if powerUpTimer >= powerUpInterval then
+            powerUpTimer = 0
+            if math.random() < 0.8 then
+                spawnPowerUp()
+            end
+        end
+        
         -- Continuously spawn platforms and structures throughout the runner
         spawnPlatformAhead()
         cleanupOldPlatforms()
@@ -1660,6 +2306,28 @@ startRunner = function()
 
         updateActiveObjects(dt)
         
+        -- Create particle trail effect if player has active speed modifier
+        if speedModifier ~= 1.0 and math.random() < 0.3 then  -- 30% chance each frame for particle generation
+            createParticleTrail()
+        end
+        
+        -- Synchronize character animation speed with movement speed
+        local character = player.Character
+        if character then
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid.Parent == character then
+                -- Get all animations in character - FIXED: proper animator access
+                local animator = humanoid:FindFirstChildOfClass("Animator")
+                if animator then
+                    for _, anim in pairs(animator:GetPlayingAnimationTracks() or {}) do
+                        if anim then
+                            -- Adjust animation playback speed based on movement modifier
+                            anim:AdjustSpeed(speedModifier)
+                        end
+                    end
+                end
+            end
+        end
         -- Check if player fell through a gap (fall detection)
         local root = getCharacterRoot()
         if root and root.Position.Y < GROUND_Y - 10 then  -- Fell 10 studs below platform
