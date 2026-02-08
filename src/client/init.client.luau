@@ -469,6 +469,214 @@ local function createHud()
     frame.Size = UDim2.fromOffset(320, 260)  -- Was 230
 end
 
+-- ========== FLASHY PICKUP POPUP SYSTEM ==========
+-- Shows an addictive center-screen animated popup when collecting special items
+local activePopups = 0  -- Track how many popups are visible to stack them
+
+local function showPickupPopup(icon, title, subtitle, color, duration)
+    if not hudGui then return end
+    duration = duration or 1.8
+
+    -- Stack offset so multiple popups don't overlap
+    local stackOffset = activePopups * 60
+    activePopups += 1
+
+    -- Container frame (full screen overlay, centered)
+    local container = Instance.new("Frame")
+    container.Name = "PickupPopup"
+    container.Size = UDim2.fromScale(1, 1)
+    container.Position = UDim2.fromScale(0, 0)
+    container.BackgroundTransparency = 1
+    container.ZIndex = 100
+    container.Parent = hudGui
+
+    -- Glowing background streak (horizontal bar flash)
+    local streak = Instance.new("Frame")
+    streak.Name = "Streak"
+    streak.AnchorPoint = Vector2.new(0.5, 0.5)
+    streak.Position = UDim2.new(0.5, 0, 0.32, stackOffset)
+    streak.Size = UDim2.new(0, 0, 0, 70)  -- Start at 0 width, will expand
+    streak.BackgroundColor3 = color
+    streak.BackgroundTransparency = 0.4
+    streak.BorderSizePixel = 0
+    streak.ZIndex = 101
+    streak.Parent = container
+
+    local streakCorner = Instance.new("UICorner")
+    streakCorner.CornerRadius = UDim.new(0, 12)
+    streakCorner.Parent = streak
+
+    local streakGradient = Instance.new("UIGradient")
+    streakGradient.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 1),
+        NumberSequenceKeypoint.new(0.2, 0.3),
+        NumberSequenceKeypoint.new(0.5, 0),
+        NumberSequenceKeypoint.new(0.8, 0.3),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+    streakGradient.Parent = streak
+
+    -- Big icon (emoji)
+    local iconLabel = Instance.new("TextLabel")
+    iconLabel.Name = "Icon"
+    iconLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+    iconLabel.Position = UDim2.new(0.5, 0, 0.32, stackOffset - 45)
+    iconLabel.Size = UDim2.fromOffset(80, 80)
+    iconLabel.BackgroundTransparency = 1
+    iconLabel.Text = icon
+    iconLabel.TextSize = 60
+    iconLabel.Font = Enum.Font.GothamBold
+    iconLabel.TextTransparency = 1  -- Start invisible, will fade in
+    iconLabel.ZIndex = 103
+    iconLabel.Parent = container
+
+    -- Title text (e.g., "SCORE x2.0!")
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Name = "Title"
+    titleLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+    titleLabel.Position = UDim2.new(0.5, 0, 0.32, stackOffset)
+    titleLabel.Size = UDim2.fromOffset(500, 50)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = title
+    titleLabel.TextColor3 = Color3.new(1, 1, 1)
+    titleLabel.TextSize = 38
+    titleLabel.Font = Enum.Font.GothamBlack
+    titleLabel.TextStrokeTransparency = 0
+    titleLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    titleLabel.TextTransparency = 1  -- Start invisible
+    titleLabel.TextScaled = false
+    titleLabel.ZIndex = 104
+    titleLabel.Parent = container
+
+    -- Subtitle text (e.g., "Double Points for 8s")
+    local subtitleLabel = Instance.new("TextLabel")
+    subtitleLabel.Name = "Subtitle"
+    subtitleLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+    subtitleLabel.Position = UDim2.new(0.5, 0, 0.32, stackOffset + 30)
+    subtitleLabel.Size = UDim2.fromOffset(400, 30)
+    subtitleLabel.BackgroundTransparency = 1
+    subtitleLabel.Text = subtitle
+    subtitleLabel.TextColor3 = color
+    subtitleLabel.TextSize = 20
+    subtitleLabel.Font = Enum.Font.GothamBold
+    subtitleLabel.TextStrokeTransparency = 0.3
+    subtitleLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    subtitleLabel.TextTransparency = 1  -- Start invisible
+    subtitleLabel.ZIndex = 104
+    subtitleLabel.Parent = container
+
+    -- ===== ANIMATION SEQUENCE =====
+
+    -- Phase 1: SLAM IN (0 → 0.15s) — icon scales up with bounce, streak expands
+    local streakExpand = TweenService:Create(
+        streak,
+        TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+        {Size = UDim2.new(0.7, 0, 0, 70)}
+    )
+
+    local iconFadeIn = TweenService:Create(
+        iconLabel,
+        TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+        {TextTransparency = 0}
+    )
+
+    -- Icon scale-up: start huge then settle (using TextSize)
+    iconLabel.TextSize = 10
+    local iconScaleUp = TweenService:Create(
+        iconLabel,
+        TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+        {TextSize = 60}
+    )
+
+    local titleFadeIn = TweenService:Create(
+        titleLabel,
+        TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        {TextTransparency = 0}
+    )
+
+    local subtitleFadeIn = TweenService:Create(
+        subtitleLabel,
+        TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        {TextTransparency = 0}
+    )
+
+    -- Play Phase 1
+    streakExpand:Play()
+    iconFadeIn:Play()
+    iconScaleUp:Play()
+
+    task.delay(0.08, function()
+        titleFadeIn:Play()
+    end)
+    task.delay(0.15, function()
+        subtitleFadeIn:Play()
+    end)
+
+    -- Phase 2: HOLD (visible for `duration` - 0.6s)
+    -- Title glow pulse while visible
+    task.spawn(function()
+        local pulseCount = 0
+        while container and container.Parent and pulseCount < 4 do
+            local pulse = TweenService:Create(
+                titleLabel,
+                TweenInfo.new(0.3, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+                {TextColor3 = color}
+            )
+            pulse:Play()
+            pulse.Completed:Wait()
+
+            local unpulse = TweenService:Create(
+                titleLabel,
+                TweenInfo.new(0.3, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+                {TextColor3 = Color3.new(1, 1, 1)}
+            )
+            unpulse:Play()
+            unpulse.Completed:Wait()
+            pulseCount += 1
+        end
+    end)
+
+    -- Phase 3: SLIDE UP & FADE OUT
+    task.delay(duration - 0.5, function()
+        if not container or not container.Parent then return end
+
+        local slideOffset = stackOffset - 60
+
+        local streakFade = TweenService:Create(
+            streak,
+            TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+            {Size = UDim2.new(0, 0, 0, 70), BackgroundTransparency = 1}
+        )
+        local iconFadeOut = TweenService:Create(
+            iconLabel,
+            TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+            {TextTransparency = 1, Position = UDim2.new(0.5, 0, 0.32, slideOffset - 45)}
+        )
+        local titleFadeOut = TweenService:Create(
+            titleLabel,
+            TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+            {TextTransparency = 1, TextStrokeTransparency = 1, Position = UDim2.new(0.5, 0, 0.32, slideOffset)}
+        )
+        local subtitleFadeOut = TweenService:Create(
+            subtitleLabel,
+            TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+            {TextTransparency = 1, TextStrokeTransparency = 1, Position = UDim2.new(0.5, 0, 0.32, slideOffset + 30)}
+        )
+
+        streakFade:Play()
+        iconFadeOut:Play()
+        titleFadeOut:Play()
+        subtitleFadeOut:Play()
+
+        titleFadeOut.Completed:Connect(function()
+            activePopups = math.max(0, activePopups - 1)
+            if container and container.Parent then
+                container:Destroy()
+            end
+        end)
+    end)
+end
+
 local function updateHud()
     if not levelLabel or not scoreLabel or not pistachioLabel then
         return  -- HUD not created yet
@@ -629,6 +837,7 @@ local function createPersonObstacle(obstacleDef, position)
                 -- Shield absorbs hit
                 hasShield = false
                 print("🛡️ Shield absorbed hit!")
+                showPickupPopup("🛡️", "SHIELD SAVED YOU!", "Hit absorbed — keep running!", Color3.fromRGB(0, 170, 255), 2.0)
                 updateHud()
                 
                 -- Shield break effect
@@ -698,6 +907,7 @@ local function createStaticObstacle(obstacleDef, position)
                 -- Shield absorbs hit
                 hasShield = false
                 print("🛡️ Shield absorbed hit!")
+                showPickupPopup("🛡️", "SHIELD SAVED YOU!", "Hit absorbed — keep running!", Color3.fromRGB(0, 170, 255), 2.0)
                 updateHud()
                 
                 -- Shield break effect
@@ -781,6 +991,13 @@ local function activatePowerUpInstance(powerUp)
     if powerUpType == "shield" then
         hasShield = true
         print("🛡️ Shield activated for", powerUpConfig.duration, "seconds")
+        showPickupPopup(
+            "🛡️",
+            "SHIELD ACTIVE!",
+            "Block 1 hit for " .. powerUpConfig.duration .. "s",
+            powerUpConfig.color,
+            2.2
+        )
         task.delay(powerUpConfig.duration, function()
             hasShield = false
             print("🛡️ Shield expired")
@@ -789,6 +1006,13 @@ local function activatePowerUpInstance(powerUp)
     elseif powerUpType == "doublePoints" then
         doublePointsActive = true
         print("⭐ Double Points activated for", powerUpConfig.duration, "seconds")
+        showPickupPopup(
+            "⭐",
+            "SCORE x2.0!",
+            "Double Points for " .. powerUpConfig.duration .. "s",
+            powerUpConfig.color,
+            2.5
+        )
         task.delay(powerUpConfig.duration, function()
             doublePointsActive = false
             print("⭐ Double Points expired")
@@ -797,6 +1021,13 @@ local function activatePowerUpInstance(powerUp)
     elseif powerUpType == "magnetBoost" then
         magnetBoostActive = true
         print("🧲 Magnet Boost activated for", powerUpConfig.duration, "seconds")
+        showPickupPopup(
+            "🧲",
+            "MAGNET BOOST!",
+            "Attract pistachios for " .. powerUpConfig.duration .. "s",
+            powerUpConfig.color,
+            2.2
+        )
         task.delay(powerUpConfig.duration, function()
             magnetBoostActive = false
             print("🧲 Magnet Boost expired")
@@ -834,6 +1065,25 @@ local function activateSpeedPad(pad)
     speedModifierEndTime = tick() + (padConfig.effectDuration or 3)
     activeSpeedPadType = padType
     currentTrailColor = padConfig.particleColor
+
+    -- Show flashy popup for speed pad
+    if padType == "speedup" then
+        showPickupPopup(
+            "⚡",
+            "SPEED x" .. string.format("%.1f", padConfig.speedMultiplier) .. "!",
+            "Turbo boost for " .. (padConfig.effectDuration or 3) .. "s!",
+            Color3.fromRGB(0, 255, 100),
+            2.0
+        )
+    else
+        showPickupPopup(
+            "🐌",
+            "SLOW DOWN!",
+            "Speed x" .. string.format("%.1f", padConfig.speedMultiplier) .. " for " .. (padConfig.effectDuration or 3) .. "s",
+            Color3.fromRGB(255, 80, 80),
+            1.8
+        )
+    end
 
     -- Collection animation
     local tween = TweenService:Create(
@@ -1657,7 +1907,27 @@ collectPistachio = function(pistachio, rarity)
     pistachioCount += 1
     totalPistachios += pistachioData.metaCurrency
     pistachiosCollectedInRun += 1
-    
+
+    -- Show flashy popup for special pistachios (gold and rare)
+    local actualPoints = pistachioData.points * streakMultiplier * (doublePointsActive and 2 or 1)
+    if rarity == "rare" then
+        showPickupPopup(
+            "💎",
+            "RARE! +" .. math.floor(actualPoints),
+            "🥜 Legendary pistachio collected!",
+            Color3.fromRGB(255, 50, 255),
+            2.5
+        )
+    elseif rarity == "gold" then
+        showPickupPopup(
+            "✨",
+            "GOLD! +" .. math.floor(actualPoints),
+            "🥜 Premium pistachio!",
+            Color3.fromRGB(255, 215, 0),
+            2.0
+        )
+    end
+
     -- Update study streak
     studyStreak += 1
     lastPistachioTime = tick()
@@ -1932,6 +2202,7 @@ local function updateActiveObjects(dt)
                 if hasShield then
                     hasShield = false
                     print("🛡️ Shield absorbed hit!")
+                    showPickupPopup("🛡️", "SHIELD SAVED YOU!", "Hit absorbed — keep running!", Color3.fromRGB(0, 170, 255), 2.0)
                     updateHud()
                     
                     -- Shield break effect
