@@ -469,442 +469,46 @@ local function createHud()
     frame.Size = UDim2.fromOffset(320, 260)  -- Was 230
 end
 
--- ========== ACTIVE EFFECTS HUD (persistent on-screen indicators) ==========
--- Shows active power-ups/speed pads as glowing bars with countdown timers on the right side of screen
-local activeEffectsContainer = nil  -- The parent frame for all active effect bars
-local activeEffectBars = {}  -- Track active bars by key name
-
-local function createActiveEffectsContainer()
+-- ========== CENTER SCREEN BANNER (same style as Study Streak) ==========
+-- Shows a full-width colored banner in the center of the screen when collecting power-ups/speed pads
+local function showCenterBanner(text, bannerColor, displayTime)
     if not hudGui then return end
-    if activeEffectsContainer and activeEffectsContainer.Parent then
-        activeEffectsContainer:Destroy()
-    end
+    displayTime = displayTime or 2
 
-    activeEffectsContainer = Instance.new("Frame")
-    activeEffectsContainer.Name = "ActiveEffects"
-    activeEffectsContainer.AnchorPoint = Vector2.new(1, 0)
-    activeEffectsContainer.Position = UDim2.new(1, -15, 0, 50)
-    activeEffectsContainer.Size = UDim2.fromOffset(260, 400)
-    activeEffectsContainer.BackgroundTransparency = 1
-    activeEffectsContainer.ZIndex = 80
-    activeEffectsContainer.Parent = hudGui
-
-    local layout = Instance.new("UIListLayout")
-    layout.Padding = UDim.new(0, 8)
-    layout.SortOrder = Enum.SortOrder.LayoutOrder
-    layout.Parent = activeEffectsContainer
-end
-
-local function showActiveEffect(key, icon, label, color, duration)
-    if not activeEffectsContainer or not activeEffectsContainer.Parent then
-        createActiveEffectsContainer()
-    end
-    if not activeEffectsContainer then return end
-
-    -- If an effect with this key already exists, remove it first
-    if activeEffectBars[key] then
-        local old = activeEffectBars[key]
-        if old.frame and old.frame.Parent then old.frame:Destroy() end
-        if old.thread then task.cancel(old.thread) end
-        activeEffectBars[key] = nil
-    end
-
-    -- Main bar frame
-    local bar = Instance.new("Frame")
-    bar.Name = "Effect_" .. key
-    bar.Size = UDim2.new(1, 0, 0, 44)
-    bar.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
-    bar.BackgroundTransparency = 0.25
-    bar.BorderSizePixel = 0
-    bar.ZIndex = 81
-    bar.ClipsDescendants = true
-    bar.Parent = activeEffectsContainer
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 10)
-    corner.Parent = bar
-
-    -- Colored left accent stripe
-    local accent = Instance.new("Frame")
-    accent.Name = "Accent"
-    accent.Size = UDim2.new(0, 5, 1, 0)
-    accent.Position = UDim2.fromScale(0, 0)
-    accent.BackgroundColor3 = color
-    accent.BorderSizePixel = 0
-    accent.ZIndex = 83
-    accent.Parent = bar
-
-    local accentCorner = Instance.new("UICorner")
-    accentCorner.CornerRadius = UDim.new(0, 10)
-    accentCorner.Parent = accent
-
-    -- Progress bar (fills from left, shrinks as time runs out)
-    local progressBg = Instance.new("Frame")
-    progressBg.Name = "ProgressBg"
-    progressBg.Size = UDim2.new(1, 0, 1, 0)
-    progressBg.Position = UDim2.fromScale(0, 0)
-    progressBg.BackgroundColor3 = color
-    progressBg.BackgroundTransparency = 0.75
-    progressBg.BorderSizePixel = 0
-    progressBg.ZIndex = 82
-    progressBg.Parent = bar
-
-    local progressCorner = Instance.new("UICorner")
-    progressCorner.CornerRadius = UDim.new(0, 10)
-    progressCorner.Parent = progressBg
-
-    -- Icon
-    local iconLbl = Instance.new("TextLabel")
-    iconLbl.Name = "Icon"
-    iconLbl.Size = UDim2.fromOffset(36, 44)
-    iconLbl.Position = UDim2.new(0, 10, 0, 0)
-    iconLbl.BackgroundTransparency = 1
-    iconLbl.Text = icon
-    iconLbl.TextSize = 26
-    iconLbl.Font = Enum.Font.GothamBold
-    iconLbl.ZIndex = 84
-    iconLbl.Parent = bar
-
-    -- Effect name
-    local nameLbl = Instance.new("TextLabel")
-    nameLbl.Name = "EffectName"
-    nameLbl.Size = UDim2.new(1, -100, 0, 22)
-    nameLbl.Position = UDim2.new(0, 48, 0, 2)
-    nameLbl.BackgroundTransparency = 1
-    nameLbl.Text = label
-    nameLbl.TextColor3 = Color3.new(1, 1, 1)
-    nameLbl.TextSize = 16
-    nameLbl.Font = Enum.Font.GothamBlack
-    nameLbl.TextXAlignment = Enum.TextXAlignment.Left
-    nameLbl.TextStrokeTransparency = 0.4
-    nameLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    nameLbl.ZIndex = 84
-    nameLbl.Parent = bar
-
-    -- Countdown timer label
-    local timerLbl = Instance.new("TextLabel")
-    timerLbl.Name = "Timer"
-    timerLbl.Size = UDim2.new(1, -100, 0, 18)
-    timerLbl.Position = UDim2.new(0, 48, 0, 23)
-    timerLbl.BackgroundTransparency = 1
-    timerLbl.Text = string.format("%.1fs remaining", duration)
-    timerLbl.TextColor3 = color
-    timerLbl.TextSize = 13
-    timerLbl.Font = Enum.Font.GothamBold
-    timerLbl.TextXAlignment = Enum.TextXAlignment.Left
-    timerLbl.TextStrokeTransparency = 0.6
-    timerLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    timerLbl.ZIndex = 84
-    timerLbl.Parent = bar
-
-    -- Slide-in animation
-    bar.Position = UDim2.new(1, 0, 0, 0)  -- Start off-screen right
-    local slideIn = TweenService:Create(
-        bar,
-        TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-        {Position = UDim2.new(0, 0, 0, 0)}
-    )
-    slideIn:Play()
-
-    -- Countdown thread: updates timer label + progress bar every frame
-    local startTime = tick()
-    local endTime = startTime + duration
-
-    local countdownThread = task.spawn(function()
-        while bar and bar.Parent do
-            local now = tick()
-            local remaining = math.max(0, endTime - now)
-            local fraction = remaining / duration
-
-            -- Update timer text
-            if remaining > 1 then
-                timerLbl.Text = string.format("%.1fs remaining", remaining)
-            else
-                timerLbl.Text = string.format("%.1fs ⚠️", remaining)
-                timerLbl.TextColor3 = Color3.fromRGB(255, 80, 80)  -- Red warning
-            end
-
-            -- Update progress bar width
-            progressBg.Size = UDim2.new(fraction, 0, 1, 0)
-
-            -- Pulse the accent color when low on time (< 2s)
-            if remaining < 2 and remaining > 0 then
-                local pulse = math.abs(math.sin(tick() * 6))
-                accent.BackgroundTransparency = pulse * 0.5
-                bar.BackgroundTransparency = 0.15 + pulse * 0.15
-            end
-
-            if remaining <= 0 then
-                break
-            end
-
-            task.wait(0.05)  -- ~20 FPS update for smoothness
-        end
-
-        -- Expire animation: slide out to the right
-        if bar and bar.Parent then
-            local slideOut = TweenService:Create(
-                bar,
-                TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.In),
-                {Position = UDim2.new(1.2, 0, 0, 0)}
-            )
-            slideOut:Play()
-            slideOut.Completed:Connect(function()
-                if bar and bar.Parent then bar:Destroy() end
-            end)
-        end
-
-        activeEffectBars[key] = nil
-    end)
-
-    activeEffectBars[key] = {frame = bar, thread = countdownThread}
-end
-
--- Remove an active effect early (e.g. shield broken by hit)
-local function removeActiveEffect(key)
-    local entry = activeEffectBars[key]
-    if not entry then return end
-
-    if entry.thread then
-        task.cancel(entry.thread)
-    end
-
-    if entry.frame and entry.frame.Parent then
-        -- Quick flash-out
-        local flashOut = TweenService:Create(
-            entry.frame,
-            TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-            {Position = UDim2.new(1.2, 0, 0, 0), BackgroundTransparency = 1}
-        )
-        flashOut:Play()
-        flashOut.Completed:Connect(function()
-            if entry.frame and entry.frame.Parent then entry.frame:Destroy() end
-        end)
-    end
-
-    activeEffectBars[key] = nil
-end
-
--- Clear all active effects (used on death/respawn)
-local function clearAllActiveEffects()
-    for key, entry in pairs(activeEffectBars) do
-        if entry.thread then
-            pcall(function() task.cancel(entry.thread) end)
-        end
-        if entry.frame and entry.frame.Parent then
-            entry.frame:Destroy()
-        end
-    end
-    activeEffectBars = {}
-end
-
--- ========== FLASHY PICKUP POPUP SYSTEM ==========
--- Shows an addictive center-screen animated popup when collecting special items
-local activePopups = 0  -- Track how many popups are visible to stack them
-
-local function showPickupPopup(icon, title, subtitle, color, duration)
-    if not hudGui then return end
-    duration = duration or 1.8
-
-    -- Stack offset so multiple popups don't overlap
-    local stackOffset = activePopups * 60
-    activePopups += 1
-
-    -- Container frame (full screen overlay, centered)
-    local container = Instance.new("Frame")
-    container.Name = "PickupPopup"
-    container.Size = UDim2.fromScale(1, 1)
-    container.Position = UDim2.fromScale(0, 0)
-    container.BackgroundTransparency = 1
-    container.ZIndex = 100
-    container.Parent = hudGui
-
-    -- Glowing background streak (horizontal bar flash)
-    local streak = Instance.new("Frame")
-    streak.Name = "Streak"
-    streak.AnchorPoint = Vector2.new(0.5, 0.5)
-    streak.Position = UDim2.new(0.5, 0, 0.32, stackOffset)
-    streak.Size = UDim2.new(0, 0, 0, 70)  -- Start at 0 width, will expand
-    streak.BackgroundColor3 = color
-    streak.BackgroundTransparency = 0.4
-    streak.BorderSizePixel = 0
-    streak.ZIndex = 101
-    streak.Parent = container
-
-    local streakCorner = Instance.new("UICorner")
-    streakCorner.CornerRadius = UDim.new(0, 12)
-    streakCorner.Parent = streak
-
-    local streakGradient = Instance.new("UIGradient")
-    streakGradient.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 1),
-        NumberSequenceKeypoint.new(0.2, 0.3),
-        NumberSequenceKeypoint.new(0.5, 0),
-        NumberSequenceKeypoint.new(0.8, 0.3),
-        NumberSequenceKeypoint.new(1, 1),
-    })
-    streakGradient.Parent = streak
-
-    -- Big icon (emoji)
-    local iconLabel = Instance.new("TextLabel")
-    iconLabel.Name = "Icon"
-    iconLabel.AnchorPoint = Vector2.new(0.5, 0.5)
-    iconLabel.Position = UDim2.new(0.5, 0, 0.32, stackOffset - 45)
-    iconLabel.Size = UDim2.fromOffset(80, 80)
-    iconLabel.BackgroundTransparency = 1
-    iconLabel.Text = icon
-    iconLabel.TextSize = 60
-    iconLabel.Font = Enum.Font.GothamBold
-    iconLabel.TextTransparency = 1  -- Start invisible, will fade in
-    iconLabel.ZIndex = 103
-    iconLabel.Parent = container
-
-    -- Title text (e.g., "SCORE x2.0!")
-    local titleLabel = Instance.new("TextLabel")
-    titleLabel.Name = "Title"
-    titleLabel.AnchorPoint = Vector2.new(0.5, 0.5)
-    titleLabel.Position = UDim2.new(0.5, 0, 0.32, stackOffset)
-    titleLabel.Size = UDim2.fromOffset(500, 50)
-    titleLabel.BackgroundTransparency = 1
-    titleLabel.Text = title
-    titleLabel.TextColor3 = Color3.new(1, 1, 1)
-    titleLabel.TextSize = 38
-    titleLabel.Font = Enum.Font.GothamBlack
-    titleLabel.TextStrokeTransparency = 0
-    titleLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    titleLabel.TextTransparency = 1  -- Start invisible
-    titleLabel.TextScaled = false
-    titleLabel.ZIndex = 104
-    titleLabel.Parent = container
-
-    -- Subtitle text (e.g., "Double Points for 8s")
-    local subtitleLabel = Instance.new("TextLabel")
-    subtitleLabel.Name = "Subtitle"
-    subtitleLabel.AnchorPoint = Vector2.new(0.5, 0.5)
-    subtitleLabel.Position = UDim2.new(0.5, 0, 0.32, stackOffset + 30)
-    subtitleLabel.Size = UDim2.fromOffset(400, 30)
-    subtitleLabel.BackgroundTransparency = 1
-    subtitleLabel.Text = subtitle
-    subtitleLabel.TextColor3 = color
-    subtitleLabel.TextSize = 20
-    subtitleLabel.Font = Enum.Font.GothamBold
-    subtitleLabel.TextStrokeTransparency = 0.3
-    subtitleLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    subtitleLabel.TextTransparency = 1  -- Start invisible
-    subtitleLabel.ZIndex = 104
-    subtitleLabel.Parent = container
-
-    -- ===== ANIMATION SEQUENCE =====
-
-    -- Phase 1: SLAM IN (0 → 0.15s) — icon scales up with bounce, streak expands
-    local streakExpand = TweenService:Create(
-        streak,
-        TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-        {Size = UDim2.new(0.7, 0, 0, 70)}
-    )
-
-    local iconFadeIn = TweenService:Create(
-        iconLabel,
-        TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-        {TextTransparency = 0}
-    )
-
-    -- Icon scale-up: start huge then settle (using TextSize)
-    iconLabel.TextSize = 10
-    local iconScaleUp = TweenService:Create(
-        iconLabel,
-        TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-        {TextSize = 60}
-    )
-
-    local titleFadeIn = TweenService:Create(
-        titleLabel,
-        TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-        {TextTransparency = 0}
-    )
-
-    local subtitleFadeIn = TweenService:Create(
-        subtitleLabel,
-        TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-        {TextTransparency = 0}
-    )
-
-    -- Play Phase 1
-    streakExpand:Play()
-    iconFadeIn:Play()
-    iconScaleUp:Play()
-
-    task.delay(0.08, function()
-        titleFadeIn:Play()
-    end)
-    task.delay(0.15, function()
-        subtitleFadeIn:Play()
-    end)
-
-    -- Phase 2: HOLD (visible for `duration` - 0.6s)
-    -- Title glow pulse while visible
     task.spawn(function()
-        local pulseCount = 0
-        while container and container.Parent and pulseCount < 4 do
-            local pulse = TweenService:Create(
-                titleLabel,
-                TweenInfo.new(0.3, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
-                {TextColor3 = color}
-            )
-            pulse:Play()
-            pulse.Completed:Wait()
+        local banner = Instance.new("Frame")
+        banner.Name = "CenterBanner"
+        banner.Size = UDim2.fromScale(1, 0.12)
+        banner.Position = UDim2.fromScale(0, 0.42)
+        banner.AnchorPoint = Vector2.new(0, 0)
+        banner.BackgroundColor3 = bannerColor
+        banner.BackgroundTransparency = 0.3
+        banner.BorderSizePixel = 0
+        banner.ZIndex = 50
+        banner.Parent = hudGui
 
-            local unpulse = TweenService:Create(
-                titleLabel,
-                TweenInfo.new(0.3, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
-                {TextColor3 = Color3.new(1, 1, 1)}
-            )
-            unpulse:Play()
-            unpulse.Completed:Wait()
-            pulseCount += 1
+        local bannerText = Instance.new("TextLabel")
+        bannerText.Size = UDim2.fromScale(1, 1)
+        bannerText.BackgroundTransparency = 1
+        bannerText.Text = text
+        bannerText.TextColor3 = Color3.fromRGB(255, 255, 255)
+        bannerText.TextSize = 36
+        bannerText.Font = Enum.Font.GothamBold
+        bannerText.TextStrokeTransparency = 0
+        bannerText.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        bannerText.ZIndex = 51
+        bannerText.Parent = banner
+
+        task.wait(displayTime)
+        if banner and banner.Parent then
+            banner:Destroy()
         end
     end)
-
-    -- Phase 3: SLIDE UP & FADE OUT
-    task.delay(duration - 0.5, function()
-        if not container or not container.Parent then return end
-
-        local slideOffset = stackOffset - 60
-
-        local streakFade = TweenService:Create(
-            streak,
-            TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-            {Size = UDim2.new(0, 0, 0, 70), BackgroundTransparency = 1}
-        )
-        local iconFadeOut = TweenService:Create(
-            iconLabel,
-            TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-            {TextTransparency = 1, Position = UDim2.new(0.5, 0, 0.32, slideOffset - 45)}
-        )
-        local titleFadeOut = TweenService:Create(
-            titleLabel,
-            TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-            {TextTransparency = 1, TextStrokeTransparency = 1, Position = UDim2.new(0.5, 0, 0.32, slideOffset)}
-        )
-        local subtitleFadeOut = TweenService:Create(
-            subtitleLabel,
-            TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-            {TextTransparency = 1, TextStrokeTransparency = 1, Position = UDim2.new(0.5, 0, 0.32, slideOffset + 30)}
-        )
-
-        streakFade:Play()
-        iconFadeOut:Play()
-        titleFadeOut:Play()
-        subtitleFadeOut:Play()
-
-        titleFadeOut.Completed:Connect(function()
-            activePopups = math.max(0, activePopups - 1)
-            if container and container.Parent then
-                container:Destroy()
-            end
-        end)
-    end)
 end
+
+-- Keep these stubs so existing calls don't break
+local function removeActiveEffect(_key) end
+local function clearAllActiveEffects() end
 
 local function updateHud()
     if not levelLabel or not scoreLabel or not pistachioLabel then
@@ -1066,7 +670,7 @@ local function createPersonObstacle(obstacleDef, position)
                 -- Shield absorbs hit
                 hasShield = false
                 print("🛡️ Shield absorbed hit!")
-                showPickupPopup("🛡️", "SHIELD SAVED YOU!", "Hit absorbed — keep running!", Color3.fromRGB(0, 170, 255), 2.0)
+                showCenterBanner("🛡️ SHIELD SAVED YOU! 🛡️", Color3.fromRGB(0, 170, 255), 2)
                 removeActiveEffect("shield")
                 updateHud()
                 
@@ -1137,7 +741,7 @@ local function createStaticObstacle(obstacleDef, position)
                 -- Shield absorbs hit
                 hasShield = false
                 print("🛡️ Shield absorbed hit!")
-                showPickupPopup("🛡️", "SHIELD SAVED YOU!", "Hit absorbed — keep running!", Color3.fromRGB(0, 170, 255), 2.0)
+                showCenterBanner("🛡️ SHIELD SAVED YOU! 🛡️", Color3.fromRGB(0, 170, 255), 2)
                 removeActiveEffect("shield")
                 updateHud()
                 
@@ -1222,52 +826,31 @@ local function activatePowerUpInstance(powerUp)
     if powerUpType == "shield" then
         hasShield = true
         print("🛡️ Shield activated for", powerUpConfig.duration, "seconds")
-        showPickupPopup(
-            "🛡️",
-            "SHIELD ACTIVE!",
-            "Block 1 hit for " .. powerUpConfig.duration .. "s",
-            powerUpConfig.color,
-            2.2
-        )
-        showActiveEffect("shield", "🛡️", "SHIELD", powerUpConfig.color, powerUpConfig.duration)
+        showCenterBanner("🛡️ SHIELD ACTIVE! (" .. powerUpConfig.duration .. "s) 🛡️", powerUpConfig.color, 2)
         task.delay(powerUpConfig.duration, function()
             hasShield = false
             print("🛡️ Shield expired")
-            removeActiveEffect("shield")
+            showCenterBanner("🛡️ Shield expired!", Color3.fromRGB(150, 50, 50), 1.5)
             updateHud()
         end)
     elseif powerUpType == "doublePoints" then
         doublePointsActive = true
         print("⭐ Double Points activated for", powerUpConfig.duration, "seconds")
-        showPickupPopup(
-            "⭐",
-            "SCORE x2.0!",
-            "Double Points for " .. powerUpConfig.duration .. "s",
-            powerUpConfig.color,
-            2.5
-        )
-        showActiveEffect("doublePoints", "⭐", "DOUBLE POINTS", powerUpConfig.color, powerUpConfig.duration)
+        showCenterBanner("⭐ SCORE x2.0! (" .. powerUpConfig.duration .. "s) ⭐", powerUpConfig.color, 2)
         task.delay(powerUpConfig.duration, function()
             doublePointsActive = false
             print("⭐ Double Points expired")
-            removeActiveEffect("doublePoints")
+            showCenterBanner("⭐ Double Points expired!", Color3.fromRGB(150, 120, 50), 1.5)
             updateHud()
         end)
     elseif powerUpType == "magnetBoost" then
         magnetBoostActive = true
         print("🧲 Magnet Boost activated for", powerUpConfig.duration, "seconds")
-        showPickupPopup(
-            "🧲",
-            "MAGNET BOOST!",
-            "Attract pistachios for " .. powerUpConfig.duration .. "s",
-            powerUpConfig.color,
-            2.2
-        )
-        showActiveEffect("magnetBoost", "🧲", "MAGNET BOOST", powerUpConfig.color, powerUpConfig.duration)
+        showCenterBanner("🧲 MAGNET BOOST! (" .. powerUpConfig.duration .. "s) 🧲", powerUpConfig.color, 2)
         task.delay(powerUpConfig.duration, function()
             magnetBoostActive = false
             print("🧲 Magnet Boost expired")
-            removeActiveEffect("magnetBoost")
+            showCenterBanner("🧲 Magnet Boost expired!", Color3.fromRGB(100, 50, 120), 1.5)
             updateHud()
         end)
     end
@@ -1306,23 +889,9 @@ local function activateSpeedPad(pad)
     -- Show flashy popup for speed pad + persistent HUD bar
     local effectDuration = padConfig.effectDuration or 3
     if padType == "speedup" then
-        showPickupPopup(
-            "⚡",
-            "SPEED x" .. string.format("%.1f", padConfig.speedMultiplier) .. "!",
-            "Turbo boost for " .. effectDuration .. "s!",
-            Color3.fromRGB(0, 255, 100),
-            2.0
-        )
-        showActiveEffect("speedPad", "⚡", "SPEED BOOST x" .. string.format("%.1f", padConfig.speedMultiplier), Color3.fromRGB(0, 255, 100), effectDuration)
+        showCenterBanner("⚡ SPEED x" .. string.format("%.1f", padConfig.speedMultiplier) .. "! (" .. effectDuration .. "s) ⚡", Color3.fromRGB(0, 200, 80), 2)
     else
-        showPickupPopup(
-            "🐌",
-            "SLOW DOWN!",
-            "Speed x" .. string.format("%.1f", padConfig.speedMultiplier) .. " for " .. effectDuration .. "s",
-            Color3.fromRGB(255, 80, 80),
-            1.8
-        )
-        showActiveEffect("speedPad", "🐌", "SLOWDOWN x" .. string.format("%.1f", padConfig.speedMultiplier), Color3.fromRGB(255, 80, 80), effectDuration)
+        showCenterBanner("🐌 SLOW DOWN x" .. string.format("%.1f", padConfig.speedMultiplier) .. "! (" .. effectDuration .. "s) 🐌", Color3.fromRGB(200, 50, 50), 2)
     end
 
     -- Collection animation
@@ -2149,24 +1718,12 @@ collectPistachio = function(pistachio, rarity)
     totalPistachios += pistachioData.metaCurrency
     pistachiosCollectedInRun += 1
 
-    -- Show flashy popup for special pistachios (gold and rare)
+    -- Show center banner for special pistachios (gold and rare)
     local actualPoints = pistachioData.points * streakMultiplier * (doublePointsActive and 2 or 1)
     if rarity == "rare" then
-        showPickupPopup(
-            "💎",
-            "RARE! +" .. math.floor(actualPoints),
-            "🥜 Legendary pistachio collected!",
-            Color3.fromRGB(255, 50, 255),
-            2.5
-        )
+        showCenterBanner("💎 RARE PISTACHIO! +" .. math.floor(actualPoints) .. " 💎", Color3.fromRGB(200, 50, 200), 2)
     elseif rarity == "gold" then
-        showPickupPopup(
-            "✨",
-            "GOLD! +" .. math.floor(actualPoints),
-            "🥜 Premium pistachio!",
-            Color3.fromRGB(255, 215, 0),
-            2.0
-        )
+        showCenterBanner("✨ GOLD PISTACHIO! +" .. math.floor(actualPoints) .. " ✨", Color3.fromRGB(200, 170, 0), 2)
     end
 
     -- Update study streak
@@ -2443,7 +2000,7 @@ local function updateActiveObjects(dt)
                 if hasShield then
                     hasShield = false
                     print("🛡️ Shield absorbed hit!")
-                    showPickupPopup("🛡️", "SHIELD SAVED YOU!", "Hit absorbed — keep running!", Color3.fromRGB(0, 170, 255), 2.0)
+                    showCenterBanner("🛡️ SHIELD SAVED YOU! 🛡️", Color3.fromRGB(0, 170, 255), 2)
                     removeActiveEffect("shield")
                     updateHud()
                     
