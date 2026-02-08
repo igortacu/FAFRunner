@@ -33,3 +33,6 @@ The game now includes dynamic speed-modifying pads distributed along the running
 - Configuration available in `CONFIG.speedPads` with customizable multipliers, colors, and spawn chances
 - Speed modifier system uses `speedModifier` variable applied to effective speed calculation
 - Particle effects created in real-time using Neon material spheres with tweens
+
+
+test
