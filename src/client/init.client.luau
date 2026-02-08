@@ -19,7 +19,8 @@ local CONFIG = {
     obstacleDetectionRange = 15,
     obstacleChaseSpeed = 12,
     -- SUBWAY SURFERS STYLE: One-hit death with continue system
-    reviveCost = 5, -- Cost in pistachios to continue after crash
+    reviveBaseCosts = {5, 15, 30, 50}, -- Base cost per year (Year 1-4)
+    reviveRepeatMultiplier = 2, -- Each revive in a run multiplies cost by this
     maxRevivesPerRun = 2, -- Can only revive twice per run
     speedPenalty = 0.7,
     -- Pistachio economy
@@ -185,6 +186,13 @@ local isInvulnerable = false
 local currentSpeed = CONFIG.runSpeed
 local revivesUsedThisRun = 0  -- Track revives used this run
 local isGamePaused = false  -- For revive screen
+
+-- Calculate dynamic revive cost based on current year and revives already used
+local function getReviveCost()
+    local baseCost = CONFIG.reviveBaseCosts[currentLevelIndex] or CONFIG.reviveBaseCosts[#CONFIG.reviveBaseCosts]
+    local multiplier = CONFIG.reviveRepeatMultiplier ^ revivesUsedThisRun -- doubles each revive
+    return math.floor(baseCost * multiplier)
+end
 local gameLoopConnection = nil  -- Track the Heartbeat connection
 
 -- Speed modifier system
@@ -590,6 +598,55 @@ local function showCenterBanner(text, bannerColor, displayTime)
     end)
 end
 
+-- ========== PISTACHIO TOAST (small, non-blocking, top-right) ==========
+-- Lightweight toast for frequent events like gold/rare pistachio pickups
+-- Replaces itself instantly so rapid collection doesn't spam the screen
+local function showPistachioToast(text, toastColor)
+    if not hudGui then return end
+
+    -- Destroy previous toast instantly
+    local existing = hudGui:FindFirstChild("PistachioToast")
+    if existing then
+        existing:Destroy()
+    end
+
+    task.spawn(function()
+        local toast = Instance.new("TextLabel")
+        toast.Name = "PistachioToast"
+        toast.Size = UDim2.fromScale(0.35, 0.05)
+        toast.Position = UDim2.fromScale(0.98, 0.18)
+        toast.AnchorPoint = Vector2.new(1, 0)
+        toast.BackgroundTransparency = 1
+        toast.Text = text
+        toast.TextColor3 = toastColor
+        toast.TextScaled = true
+        toast.Font = Enum.Font.GothamBold
+        toast.TextXAlignment = Enum.TextXAlignment.Right
+        toast.TextStrokeTransparency = 0.3
+        toast.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        toast.ZIndex = 45
+        toast.Parent = hudGui
+
+        local maxText = Instance.new("UITextSizeConstraint")
+        maxText.MaxTextSize = 22
+        maxText.Parent = toast
+
+        -- Brief hold then fade out
+        task.wait(1.2)
+        if toast and toast.Parent then
+            local fade = TweenService:Create(toast, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+                TextTransparency = 1,
+                TextStrokeTransparency = 1
+            })
+            fade:Play()
+            task.wait(0.4)
+            if toast and toast.Parent then
+                toast:Destroy()
+            end
+        end
+    end)
+end
+
 -- Keep these stubs so existing calls don't break
 local function removeActiveEffect(_key) end
 local function clearAllActiveEffects() end
@@ -623,7 +680,7 @@ local function updateHud()
     -- Revives remaining (Subway Surfers style)
     local revivesLeft = CONFIG.maxRevivesPerRun - revivesUsedThisRun
     if revivesLeft > 0 then
-        healthLabel.Text = string.format("❤️ Lives: %d | Revive Cost: %d 🥜", revivesLeft, CONFIG.reviveCost)
+        healthLabel.Text = string.format("❤️ Lives: %d | Revive Cost: %d 🥜", revivesLeft, getReviveCost())
         healthLabel.TextColor3 = Color3.fromRGB(100, 200, 100)
     else
         healthLabel.Text = "❤️ Lives: 0 (No more revives!)"
@@ -1304,7 +1361,8 @@ crashPlayer = function()
     flashTween:Play()
     
     -- Check if player can revive
-    local canRevive = revivesUsedThisRun < CONFIG.maxRevivesPerRun and totalPistachios >= CONFIG.reviveCost
+    local reviveCost = getReviveCost()
+    local canRevive = revivesUsedThisRun < CONFIG.maxRevivesPerRun and totalPistachios >= reviveCost
     
     -- Show revive/game over screen
     task.wait(0.3)
@@ -1358,7 +1416,7 @@ showReviveScreen = function(crashFlash)
     reviveButton.Position = UDim2.fromScale(0.1, 0.55)
     reviveButton.Size = UDim2.new(0.8, 0, 0.18, 0)
     reviveButton.BackgroundColor3 = Color3.fromRGB(50, 180, 50)
-    reviveButton.Text = string.format("🔄 CONTINUE (%d 🥜)", CONFIG.reviveCost)
+    reviveButton.Text = string.format("🔄 CONTINUE (%d 🥜)", getReviveCost())
     reviveButton.TextColor3 = Color3.fromRGB(255, 255, 255)
     reviveButton.TextSize = 20
     reviveButton.Font = Enum.Font.GothamBold
@@ -1425,7 +1483,8 @@ showReviveScreen = function(crashFlash)
         countdownActive = false
         
         -- Spend pistachios to revive
-        totalPistachios -= CONFIG.reviveCost
+        local cost = getReviveCost()
+        totalPistachios -= cost
         revivesUsedThisRun += 1
         
         reviveGui:Destroy()
@@ -1456,7 +1515,7 @@ showReviveScreen = function(crashFlash)
         studyStreakLevel = 0
         streakMultiplier = 1
         
-        print("🔄 REVIVED! Pistachios spent:", CONFIG.reviveCost, "Revives used:", revivesUsedThisRun)
+        print("🔄 REVIVED! Pistachios spent:", cost, "Revives used:", revivesUsedThisRun)
         updateHud()
         
         -- Clear nearby obstacles
@@ -1802,12 +1861,12 @@ collectPistachio = function(pistachio, rarity)
     totalPistachios += pistachioData.metaCurrency
     pistachiosCollectedInRun += 1
 
-    -- Show center banner for special pistachios (gold and rare)
+    -- Show small toast for special pistachios (gold and rare) — non-blocking
     local actualPoints = pistachioData.points * streakMultiplier * (doublePointsActive and 2 or 1)
     if rarity == "rare" then
-        showCenterBanner("💎 RARE PISTACHIO! +" .. math.floor(actualPoints) .. " 💎", Color3.fromRGB(200, 50, 200), 2)
+        showPistachioToast("💎 RARE +" .. math.floor(actualPoints), Color3.fromRGB(220, 80, 255))
     elseif rarity == "gold" then
-        showCenterBanner("✨ GOLD PISTACHIO! +" .. math.floor(actualPoints) .. " ✨", Color3.fromRGB(200, 170, 0), 2)
+        showPistachioToast("✨ GOLD +" .. math.floor(actualPoints), Color3.fromRGB(255, 200, 50))
     end
 
     -- Update study streak
@@ -2290,7 +2349,7 @@ end
 
 startRunner = function()
     print("🎮 FAF RUN — Credite, Cafele, Colocvii!")
-    print("🥜 Revive Cost:", CONFIG.reviveCost, "pistachios")
+    print("🥜 Revive Cost: scales with year (5/15/30/50) and doubles per revive")
     print("❤️ Max Revives Per Run:", CONFIG.maxRevivesPerRun)
     print("⚡ Speed Pad System: ACTIVE")
     print("   - Speed Up Pads: Green (1.5x speed)")
