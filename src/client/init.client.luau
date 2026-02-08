@@ -469,6 +469,235 @@ local function createHud()
     frame.Size = UDim2.fromOffset(320, 260)  -- Was 230
 end
 
+-- ========== ACTIVE EFFECTS HUD (persistent on-screen indicators) ==========
+-- Shows active power-ups/speed pads as glowing bars with countdown timers on the right side of screen
+local activeEffectsContainer = nil  -- The parent frame for all active effect bars
+local activeEffectBars = {}  -- Track active bars by key name
+
+local function createActiveEffectsContainer()
+    if not hudGui then return end
+    if activeEffectsContainer and activeEffectsContainer.Parent then
+        activeEffectsContainer:Destroy()
+    end
+
+    activeEffectsContainer = Instance.new("Frame")
+    activeEffectsContainer.Name = "ActiveEffects"
+    activeEffectsContainer.AnchorPoint = Vector2.new(1, 0)
+    activeEffectsContainer.Position = UDim2.new(1, -15, 0, 50)
+    activeEffectsContainer.Size = UDim2.fromOffset(260, 400)
+    activeEffectsContainer.BackgroundTransparency = 1
+    activeEffectsContainer.ZIndex = 80
+    activeEffectsContainer.Parent = hudGui
+
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 8)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = activeEffectsContainer
+end
+
+local function showActiveEffect(key, icon, label, color, duration)
+    if not activeEffectsContainer or not activeEffectsContainer.Parent then
+        createActiveEffectsContainer()
+    end
+    if not activeEffectsContainer then return end
+
+    -- If an effect with this key already exists, remove it first
+    if activeEffectBars[key] then
+        local old = activeEffectBars[key]
+        if old.frame and old.frame.Parent then old.frame:Destroy() end
+        if old.thread then task.cancel(old.thread) end
+        activeEffectBars[key] = nil
+    end
+
+    -- Main bar frame
+    local bar = Instance.new("Frame")
+    bar.Name = "Effect_" .. key
+    bar.Size = UDim2.new(1, 0, 0, 44)
+    bar.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+    bar.BackgroundTransparency = 0.25
+    bar.BorderSizePixel = 0
+    bar.ZIndex = 81
+    bar.ClipsDescendants = true
+    bar.Parent = activeEffectsContainer
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 10)
+    corner.Parent = bar
+
+    -- Colored left accent stripe
+    local accent = Instance.new("Frame")
+    accent.Name = "Accent"
+    accent.Size = UDim2.new(0, 5, 1, 0)
+    accent.Position = UDim2.fromScale(0, 0)
+    accent.BackgroundColor3 = color
+    accent.BorderSizePixel = 0
+    accent.ZIndex = 83
+    accent.Parent = bar
+
+    local accentCorner = Instance.new("UICorner")
+    accentCorner.CornerRadius = UDim.new(0, 10)
+    accentCorner.Parent = accent
+
+    -- Progress bar (fills from left, shrinks as time runs out)
+    local progressBg = Instance.new("Frame")
+    progressBg.Name = "ProgressBg"
+    progressBg.Size = UDim2.new(1, 0, 1, 0)
+    progressBg.Position = UDim2.fromScale(0, 0)
+    progressBg.BackgroundColor3 = color
+    progressBg.BackgroundTransparency = 0.75
+    progressBg.BorderSizePixel = 0
+    progressBg.ZIndex = 82
+    progressBg.Parent = bar
+
+    local progressCorner = Instance.new("UICorner")
+    progressCorner.CornerRadius = UDim.new(0, 10)
+    progressCorner.Parent = progressBg
+
+    -- Icon
+    local iconLbl = Instance.new("TextLabel")
+    iconLbl.Name = "Icon"
+    iconLbl.Size = UDim2.fromOffset(36, 44)
+    iconLbl.Position = UDim2.new(0, 10, 0, 0)
+    iconLbl.BackgroundTransparency = 1
+    iconLbl.Text = icon
+    iconLbl.TextSize = 26
+    iconLbl.Font = Enum.Font.GothamBold
+    iconLbl.ZIndex = 84
+    iconLbl.Parent = bar
+
+    -- Effect name
+    local nameLbl = Instance.new("TextLabel")
+    nameLbl.Name = "EffectName"
+    nameLbl.Size = UDim2.new(1, -100, 0, 22)
+    nameLbl.Position = UDim2.new(0, 48, 0, 2)
+    nameLbl.BackgroundTransparency = 1
+    nameLbl.Text = label
+    nameLbl.TextColor3 = Color3.new(1, 1, 1)
+    nameLbl.TextSize = 16
+    nameLbl.Font = Enum.Font.GothamBlack
+    nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+    nameLbl.TextStrokeTransparency = 0.4
+    nameLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    nameLbl.ZIndex = 84
+    nameLbl.Parent = bar
+
+    -- Countdown timer label
+    local timerLbl = Instance.new("TextLabel")
+    timerLbl.Name = "Timer"
+    timerLbl.Size = UDim2.new(1, -100, 0, 18)
+    timerLbl.Position = UDim2.new(0, 48, 0, 23)
+    timerLbl.BackgroundTransparency = 1
+    timerLbl.Text = string.format("%.1fs remaining", duration)
+    timerLbl.TextColor3 = color
+    timerLbl.TextSize = 13
+    timerLbl.Font = Enum.Font.GothamBold
+    timerLbl.TextXAlignment = Enum.TextXAlignment.Left
+    timerLbl.TextStrokeTransparency = 0.6
+    timerLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    timerLbl.ZIndex = 84
+    timerLbl.Parent = bar
+
+    -- Slide-in animation
+    bar.Position = UDim2.new(1, 0, 0, 0)  -- Start off-screen right
+    local slideIn = TweenService:Create(
+        bar,
+        TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+        {Position = UDim2.new(0, 0, 0, 0)}
+    )
+    slideIn:Play()
+
+    -- Countdown thread: updates timer label + progress bar every frame
+    local startTime = tick()
+    local endTime = startTime + duration
+
+    local countdownThread = task.spawn(function()
+        while bar and bar.Parent do
+            local now = tick()
+            local remaining = math.max(0, endTime - now)
+            local fraction = remaining / duration
+
+            -- Update timer text
+            if remaining > 1 then
+                timerLbl.Text = string.format("%.1fs remaining", remaining)
+            else
+                timerLbl.Text = string.format("%.1fs ⚠️", remaining)
+                timerLbl.TextColor3 = Color3.fromRGB(255, 80, 80)  -- Red warning
+            end
+
+            -- Update progress bar width
+            progressBg.Size = UDim2.new(fraction, 0, 1, 0)
+
+            -- Pulse the accent color when low on time (< 2s)
+            if remaining < 2 and remaining > 0 then
+                local pulse = math.abs(math.sin(tick() * 6))
+                accent.BackgroundTransparency = pulse * 0.5
+                bar.BackgroundTransparency = 0.15 + pulse * 0.15
+            end
+
+            if remaining <= 0 then
+                break
+            end
+
+            task.wait(0.05)  -- ~20 FPS update for smoothness
+        end
+
+        -- Expire animation: slide out to the right
+        if bar and bar.Parent then
+            local slideOut = TweenService:Create(
+                bar,
+                TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.In),
+                {Position = UDim2.new(1.2, 0, 0, 0)}
+            )
+            slideOut:Play()
+            slideOut.Completed:Connect(function()
+                if bar and bar.Parent then bar:Destroy() end
+            end)
+        end
+
+        activeEffectBars[key] = nil
+    end)
+
+    activeEffectBars[key] = {frame = bar, thread = countdownThread}
+end
+
+-- Remove an active effect early (e.g. shield broken by hit)
+local function removeActiveEffect(key)
+    local entry = activeEffectBars[key]
+    if not entry then return end
+
+    if entry.thread then
+        task.cancel(entry.thread)
+    end
+
+    if entry.frame and entry.frame.Parent then
+        -- Quick flash-out
+        local flashOut = TweenService:Create(
+            entry.frame,
+            TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+            {Position = UDim2.new(1.2, 0, 0, 0), BackgroundTransparency = 1}
+        )
+        flashOut:Play()
+        flashOut.Completed:Connect(function()
+            if entry.frame and entry.frame.Parent then entry.frame:Destroy() end
+        end)
+    end
+
+    activeEffectBars[key] = nil
+end
+
+-- Clear all active effects (used on death/respawn)
+local function clearAllActiveEffects()
+    for key, entry in pairs(activeEffectBars) do
+        if entry.thread then
+            pcall(function() task.cancel(entry.thread) end)
+        end
+        if entry.frame and entry.frame.Parent then
+            entry.frame:Destroy()
+        end
+    end
+    activeEffectBars = {}
+end
+
 -- ========== FLASHY PICKUP POPUP SYSTEM ==========
 -- Shows an addictive center-screen animated popup when collecting special items
 local activePopups = 0  -- Track how many popups are visible to stack them
@@ -838,6 +1067,7 @@ local function createPersonObstacle(obstacleDef, position)
                 hasShield = false
                 print("🛡️ Shield absorbed hit!")
                 showPickupPopup("🛡️", "SHIELD SAVED YOU!", "Hit absorbed — keep running!", Color3.fromRGB(0, 170, 255), 2.0)
+                removeActiveEffect("shield")
                 updateHud()
                 
                 -- Shield break effect
@@ -908,6 +1138,7 @@ local function createStaticObstacle(obstacleDef, position)
                 hasShield = false
                 print("🛡️ Shield absorbed hit!")
                 showPickupPopup("🛡️", "SHIELD SAVED YOU!", "Hit absorbed — keep running!", Color3.fromRGB(0, 170, 255), 2.0)
+                removeActiveEffect("shield")
                 updateHud()
                 
                 -- Shield break effect
@@ -998,9 +1229,11 @@ local function activatePowerUpInstance(powerUp)
             powerUpConfig.color,
             2.2
         )
+        showActiveEffect("shield", "🛡️", "SHIELD", powerUpConfig.color, powerUpConfig.duration)
         task.delay(powerUpConfig.duration, function()
             hasShield = false
             print("🛡️ Shield expired")
+            removeActiveEffect("shield")
             updateHud()
         end)
     elseif powerUpType == "doublePoints" then
@@ -1013,9 +1246,11 @@ local function activatePowerUpInstance(powerUp)
             powerUpConfig.color,
             2.5
         )
+        showActiveEffect("doublePoints", "⭐", "DOUBLE POINTS", powerUpConfig.color, powerUpConfig.duration)
         task.delay(powerUpConfig.duration, function()
             doublePointsActive = false
             print("⭐ Double Points expired")
+            removeActiveEffect("doublePoints")
             updateHud()
         end)
     elseif powerUpType == "magnetBoost" then
@@ -1028,9 +1263,11 @@ local function activatePowerUpInstance(powerUp)
             powerUpConfig.color,
             2.2
         )
+        showActiveEffect("magnetBoost", "🧲", "MAGNET BOOST", powerUpConfig.color, powerUpConfig.duration)
         task.delay(powerUpConfig.duration, function()
             magnetBoostActive = false
             print("🧲 Magnet Boost expired")
+            removeActiveEffect("magnetBoost")
             updateHud()
         end)
     end
@@ -1066,23 +1303,26 @@ local function activateSpeedPad(pad)
     activeSpeedPadType = padType
     currentTrailColor = padConfig.particleColor
 
-    -- Show flashy popup for speed pad
+    -- Show flashy popup for speed pad + persistent HUD bar
+    local effectDuration = padConfig.effectDuration or 3
     if padType == "speedup" then
         showPickupPopup(
             "⚡",
             "SPEED x" .. string.format("%.1f", padConfig.speedMultiplier) .. "!",
-            "Turbo boost for " .. (padConfig.effectDuration or 3) .. "s!",
+            "Turbo boost for " .. effectDuration .. "s!",
             Color3.fromRGB(0, 255, 100),
             2.0
         )
+        showActiveEffect("speedPad", "⚡", "SPEED BOOST x" .. string.format("%.1f", padConfig.speedMultiplier), Color3.fromRGB(0, 255, 100), effectDuration)
     else
         showPickupPopup(
             "🐌",
             "SLOW DOWN!",
-            "Speed x" .. string.format("%.1f", padConfig.speedMultiplier) .. " for " .. (padConfig.effectDuration or 3) .. "s",
+            "Speed x" .. string.format("%.1f", padConfig.speedMultiplier) .. " for " .. effectDuration .. "s",
             Color3.fromRGB(255, 80, 80),
             1.8
         )
+        showActiveEffect("speedPad", "🐌", "SLOWDOWN x" .. string.format("%.1f", padConfig.speedMultiplier), Color3.fromRGB(255, 80, 80), effectDuration)
     end
 
     -- Collection animation
@@ -1705,6 +1945,7 @@ respawnPlayer = function()
     doublePointsActive = false
     magnetBoostActive = false
     activePowerUps = {}
+    clearAllActiveEffects()  -- Remove all active effect HUD bars
 
     -- Clear all power-ups
     for _, powerUp in pairs(powerUpsFolder:GetChildren()) do
@@ -2203,6 +2444,7 @@ local function updateActiveObjects(dt)
                     hasShield = false
                     print("🛡️ Shield absorbed hit!")
                     showPickupPopup("🛡️", "SHIELD SAVED YOU!", "Hit absorbed — keep running!", Color3.fromRGB(0, 170, 255), 2.0)
+                    removeActiveEffect("shield")
                     updateHud()
                     
                     -- Shield break effect
@@ -2452,6 +2694,7 @@ startRunner = function()
     end
 
     createHud()
+    createActiveEffectsContainer()
     setSkyBackground()
     updateHud()
     initializePlatforms()  -- Create initial platforms
