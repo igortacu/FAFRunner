@@ -469,39 +469,123 @@ local function createHud()
     frame.Size = UDim2.fromOffset(320, 260)  -- Was 230
 end
 
--- ========== CENTER SCREEN BANNER (same style as Study Streak) ==========
--- Shows a full-width colored banner in the center of the screen when collecting power-ups/speed pads
+-- ========== CENTER SCREEN NOTIFICATION (pill / capsule style) ==========
+-- Shows a sleek centered pill notification with slide-in, glow, and fade-out
 local function showCenterBanner(text, bannerColor, displayTime)
     if not hudGui then return end
     displayTime = displayTime or 2
 
-    task.spawn(function()
-        local banner = Instance.new("Frame")
-        banner.Name = "CenterBanner"
-        banner.Size = UDim2.fromScale(1, 0.12)
-        banner.Position = UDim2.fromScale(0, 0.42)
-        banner.AnchorPoint = Vector2.new(0, 0)
-        banner.BackgroundColor3 = bannerColor
-        banner.BackgroundTransparency = 0.3
-        banner.BorderSizePixel = 0
-        banner.ZIndex = 50
-        banner.Parent = hudGui
+    -- Destroy any existing notification (including Study Streak banners)
+    for _, child in ipairs(hudGui:GetChildren()) do
+        if child.Name == "CenterBanner" or child.Name == "StreakEffect" then
+            child:Destroy()
+        end
+    end
 
+    task.spawn(function()
+        -- Outer container (invisible, for centering)
+        local container = Instance.new("Frame")
+        container.Name = "CenterBanner"
+        container.Size = UDim2.fromScale(1, 0.1)
+        container.Position = UDim2.fromScale(0.5, 0.38)
+        container.AnchorPoint = Vector2.new(0.5, 0.5)
+        container.BackgroundTransparency = 1
+        container.BorderSizePixel = 0
+        container.ZIndex = 50
+        container.Parent = hudGui
+
+        -- Pill background
+        local pill = Instance.new("Frame")
+        pill.Name = "Pill"
+        pill.Size = UDim2.fromScale(0, 0.85) -- starts at 0 width for scale-in
+        pill.Position = UDim2.fromScale(0.5, 0.5)
+        pill.AnchorPoint = Vector2.new(0.5, 0.5)
+        pill.BackgroundColor3 = bannerColor
+        pill.BackgroundTransparency = 0.15
+        pill.BorderSizePixel = 0
+        pill.ZIndex = 51
+        pill.Parent = container
+
+        -- Rounded corners
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0.5, 0)
+        corner.Parent = pill
+
+        -- Inner glow/highlight at top
+        local glow = Instance.new("Frame")
+        glow.Size = UDim2.fromScale(0.95, 0.4)
+        glow.Position = UDim2.fromScale(0.5, 0.05)
+        glow.AnchorPoint = Vector2.new(0.5, 0)
+        glow.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        glow.BackgroundTransparency = 0.8
+        glow.BorderSizePixel = 0
+        glow.ZIndex = 52
+        glow.Parent = pill
+
+        local glowCorner = Instance.new("UICorner")
+        glowCorner.CornerRadius = UDim.new(0.5, 0)
+        glowCorner.Parent = glow
+
+        -- Drop shadow (darker pill behind)
+        local shadow = Instance.new("Frame")
+        shadow.Size = UDim2.fromScale(1.02, 1.15)
+        shadow.Position = UDim2.fromScale(0.5, 0.55)
+        shadow.AnchorPoint = Vector2.new(0.5, 0.5)
+        shadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        shadow.BackgroundTransparency = 0.7
+        shadow.BorderSizePixel = 0
+        shadow.ZIndex = 50
+        shadow.Parent = pill
+
+        local shadowCorner = Instance.new("UICorner")
+        shadowCorner.CornerRadius = UDim.new(0.5, 0)
+        shadowCorner.Parent = shadow
+
+        -- Text
         local bannerText = Instance.new("TextLabel")
-        bannerText.Size = UDim2.fromScale(1, 1)
+        bannerText.Size = UDim2.fromScale(0.9, 1)
+        bannerText.Position = UDim2.fromScale(0.5, 0.5)
+        bannerText.AnchorPoint = Vector2.new(0.5, 0.5)
         bannerText.BackgroundTransparency = 1
         bannerText.Text = text
         bannerText.TextColor3 = Color3.fromRGB(255, 255, 255)
-        bannerText.TextSize = 36
+        bannerText.TextScaled = true
         bannerText.Font = Enum.Font.GothamBold
-        bannerText.TextStrokeTransparency = 0
+        bannerText.TextStrokeTransparency = 0.3
         bannerText.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-        bannerText.ZIndex = 51
-        bannerText.Parent = banner
+        bannerText.ZIndex = 53
+        bannerText.Parent = pill
 
+        -- Max text size constraint
+        local textConstraint = Instance.new("UITextSizeConstraint")
+        textConstraint.MaxTextSize = 32
+        textConstraint.Parent = bannerText
+
+        -- ANIMATE IN: scale pill from 0 to proper width
+        local tweenIn = TweenService:Create(pill, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Size = UDim2.fromScale(0.55, 0.85)
+        })
+        tweenIn:Play()
+
+        -- Hold
         task.wait(displayTime)
-        if banner and banner.Parent then
-            banner:Destroy()
+
+        -- ANIMATE OUT: shrink + fade
+        if container and container.Parent then
+            local tweenOut = TweenService:Create(pill, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+                Size = UDim2.fromScale(0, 0.85),
+                BackgroundTransparency = 1
+            })
+            local textOut = TweenService:Create(bannerText, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+                TextTransparency = 1,
+                TextStrokeTransparency = 1
+            })
+            tweenOut:Play()
+            textOut:Play()
+            task.wait(0.3)
+            if container and container.Parent then
+                container:Destroy()
+            end
         end
     end)
 end
@@ -1738,39 +1822,8 @@ collectPistachio = function(pistachio, rarity)
         streakMultiplier = CONFIG.studyStreakMultipliers[studyStreakLevel + 1] or CONFIG.studyStreakMultipliers[#CONFIG.studyStreakMultipliers]
         print("🔥 STREAK LEVEL UP! New level:", studyStreakLevel, "Multiplier:", streakMultiplier)
         
-        -- Create streak level up effect (safe spawn to avoid blocking)
-        task.spawn(function()
-            if not hudGui then return end
-            
-            local streakEffect = Instance.new("Frame")
-            streakEffect.Name = "StreakEffect"
-            streakEffect.Size = UDim2.fromScale(1, 0.15)
-            streakEffect.Position = UDim2.fromScale(0, 0.4)
-            streakEffect.AnchorPoint = Vector2.new(0, 0)
-            streakEffect.BackgroundColor3 = Color3.fromRGB(255, 215, 0)  -- Gold color
-            streakEffect.BackgroundTransparency = 0.3
-            streakEffect.BorderSizePixel = 0
-            streakEffect.ZIndex = 50
-            streakEffect.Parent = hudGui
-            
-            -- Add "STREAK UP!" text
-            local streakText = Instance.new("TextLabel")
-            streakText.Size = UDim2.fromScale(1, 1)
-            streakText.BackgroundTransparency = 1
-            streakText.Text = "🔥 STUDY STREAK x" .. streakMultiplier .. "! 🔥"
-            streakText.TextColor3 = Color3.fromRGB(255, 255, 255)
-            streakText.TextSize = 36
-            streakText.Font = Enum.Font.GothamBold
-            streakText.TextStrokeTransparency = 0
-            streakText.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-            streakText.ZIndex = 51
-            streakText.Parent = streakEffect
-            
-            task.wait(1.5)
-            if streakEffect and streakEffect.Parent then
-                streakEffect:Destroy()
-            end
-        end)
+        -- Show streak level up using the shared banner system
+        showCenterBanner("🔥 STUDY STREAK x" .. streakMultiplier .. "! 🔥", Color3.fromRGB(255, 185, 0), 1.5)
     end
     
     -- Add score with streak multiplier
@@ -2251,7 +2304,6 @@ startRunner = function()
     end
 
     createHud()
-    createActiveEffectsContainer()
     setSkyBackground()
     updateHud()
     initializePlatforms()  -- Create initial platforms
